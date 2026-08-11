@@ -210,9 +210,11 @@ verify gate — so your schema is what "good" means, not a second opinion.
 
 ## What's next (honestly)
 
-This is a PoC, deliberately small — the detect → heal → verify loop, watchdog mode, the
-any-scraper row contract, the selector ledger for flip-flopping sites, LLM-assisted repair for
-when even the values change, and pluggable validators are all shipped. The interesting next steps:
+Small by design — one machine, one target, one loop. Shipped so far: the detect → heal → verify
+loop, watchdog mode, the any-scraper row contract, the selector ledger for flip-flopping sites,
+LLM-assisted repair for when even the values change, and pluggable validators — all covered by
+the test suite, all green in CI. What this is *not*: a fleet manager, an anti-bot tool, or a
+multi-node production deployment. It is the 99% case, done well. The interesting next steps:
 
 - **LLM repair that learns from its own misses** — feed the failed proposal plus the page it
   failed on back to the model, so per-site selector-writing rules accumulate.
