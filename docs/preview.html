@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>scrape-heal — live demo replay</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #010409; min-height: 100vh; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; gap: 18px; padding: 24px;
+         font-family: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace; }
+  .win { width: min(760px, 94vw); background: #0d1117; border: 1px solid #30363d;
+         border-radius: 12px; overflow: hidden; box-shadow: 0 12px 60px rgba(0,0,0,.65); }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+         background: #161b22; border-bottom: 1px solid #30363d; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: #ff5f56; } .dot.y { background: #ffbd2e; } .dot.g { background: #27c93f; }
+  .title { margin-left: 12px; font-size: 12px; color: #8b949e; }
+  pre { padding: 20px 22px 22px; font-size: 13.5px; line-height: 1.55; color: #e6edf3;
+        white-space: pre; min-height: 430px; overflow-x: auto; }
+  .cursor { display: inline-block; width: 8px; height: 15px; background: #3fb950;
+            vertical-align: text-bottom; }
+  .controls { display: flex; align-items: center; gap: 14px; }
+  .step { color: #8b949e; font-size: 12.5px; letter-spacing: .4px; }
+  button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px;
+           padding: 8px 16px; font-family: inherit; font-size: 12.5px; cursor: pointer; }
+  button:hover { background: #30363d; }
+  .hint { color: #484f58; font-size: 11.5px; }
+</style>
+</head>
+<body>
+
+<div class="win">
+  <div class="bar">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="title">scrape-heal — npm run demo</span>
+  </div>
+  <pre id="term"></pre>
+</div>
+
+<div class="controls">
+  <button id="replay">↻ Replay</button>
+  <span class="step" id="step">STEP 0 — starting…</span>
+</div>
+<div class="hint">live replay of <b>npm run demo</b> — the detect → heal → verify loop</div>
+
+<script>
+  const C = {
+    cmd:   '#e6edf3',
+    green: '#3fb950',
+    red:   '#f85149',
+    yellow:'#d29922',
+    cyan:  '#58a6ff',
+    dim:   '#8b949e',
+  };
+
+  // The same story the demo GIF renders: healthy run → silent redesign →
+  // breakage detected → healer derives new selectors → verified → shipped.
+  const lines = [
+    { t: 0.0,  d: 1.2, c: C.cmd,    s: '$ npm run demo' },
+    { t: 1.5,  d: 0.05, c: C.dim,   s: '┌──────────────────────────────────────────────────────────────┐' },
+    { t: 1.7,  d: 0.05, c: C.cyan,  s: 'STEP 1 — the site is healthy, the scraper works' },
+    { t: 2.2,  d: 0.05, c: C.green, s: '  ✓ extracted 4 item(s) — schema OK' },
+    { t: 2.6,  d: 0.22, c: C.cmd,   s: '      1. Wireless Mouse        |  $24.99' },
+    { t: 3.0,  d: 0.22, c: C.cmd,   s: '      2. Mechanical Keyboard   |  $89.00' },
+    { t: 3.4,  d: 0.22, c: C.cmd,   s: '      3. USB-C Hub             |  $39.50' },
+    { t: 3.8,  d: 0.22, c: C.cmd,   s: '      4. 4K Monitor            |  $299.00' },
+    { t: 4.6,  d: 0.05, c: C.cyan,  s: 'STEP 2 — the site redeploys overnight. Nobody tells the scraper.' },
+    { t: 5.1,  d: 0.05, c: C.red,   s: '  ✗ extracted 0 item(s) — BROKEN' },
+    { t: 5.5,  d: 0.25, c: C.yellow,s: '    - expected at least 4 item(s), got 0' },
+    { t: 5.9,  d: 0.25, c: C.yellow,s: '    - missing known value(s): Wireless Mouse, Mechanical Keyboard, …' },
+    { t: 6.6,  d: 0.05, c: C.cyan,  s: 'STEP 3 — the healer wakes up. It knows what the data used to look like.' },
+    { t: 7.1,  d: 0.45, c: C.cmd,   s: '  heal: item container candidate ".item" — 4 match(es)' },
+    { t: 7.8,  d: 0.45, c: C.cmd,   s: '  heal: field "name" — candidate "h2.title" (4 match(es))' },
+    { t: 8.5,  d: 0.45, c: C.cmd,   s: '  heal: field "price" — candidate "span.amount" (4 match(es))' },
+    { t: 9.2,  d: 0.55, c: C.cmd,   s: '  heal: verifying on the live page…' },
+    { t: 10.0, d: 0.3,  c: C.green, s: '  heal: PASS — 4 item(s), every known "name" present. Shipping the repair.' },
+    { t: 11.0, d: 0.05, c: C.cyan,  s: 'STEP 4 — repaired, and only because verification passed' },
+    { t: 11.5, d: 0.25, c: C.cmd,   s: '  new config: items ".item"' },
+    { t: 12.0, d: 0.25, c: C.cmd,   s: '              name -> "h2.title"    price -> "span.amount"' },
+    { t: 12.7, d: 0.22, c: C.cmd,   s: '      1. Wireless Mouse        |  $24.99' },
+    { t: 13.1, d: 0.22, c: C.cmd,   s: '      2. Mechanical Keyboard   |  $89.00' },
+    { t: 13.5, d: 0.22, c: C.cmd,   s: '      3. USB-C Hub             |  $39.50' },
+    { t: 13.9, d: 0.22, c: C.cmd,   s: '      4. 4K Monitor            |  $299.00' },
+    { t: 14.6, d: 0.35, c: C.green, s: '  ✓ data is identical to the last good run — nothing lost, nothing invented.' },
+    { t: 15.5, d: 0.5,  c: C.dim,   s: '  If verification had failed, nothing would have been shipped.' },
+  ];
+  const END = 19; // seconds; typing finishes ~16s, then a hold
+
+  const term = document.getElementById('term');
+  const step = document.getElementById('step');
+  let running = null;
+
+  function render(now) {
+    let out = '';
+    let curStep = 0;
+    for (const ln of lines) {
+      if (now < ln.t) break;
+      const frac = ln.d <= 0 ? 1 : Math.min(1, (now - ln.t) / ln.d);
+      const n = Math.max(1, Math.floor(ln.s.length * frac));
+      out += '<span style="color:' + ln.c + '">' + ln.s.slice(0, n) + '</span>\n';
+      if (/^STEP (\d)/.test(ln.s)) curStep = Math.max(curStep, +ln.s.match(/^STEP (\d)/)[1]);
+    }
+    if (Math.floor(now / 0.5) % 2 === 0) out += '<span class="cursor"></span>';
+    term.innerHTML = out;
+    step.textContent = now >= END ? '✓ loop complete — repaired & verified'
+      : curStep ? 'STEP ' + curStep + ' of 4' : 'STEP 0 — starting…';
+  }
+
+  function start() {
+    if (running) cancelAnimationFrame(running);
+    render(0);
+    const t0 = performance.now();
+    const tick = (ts) => {
+      const now = (ts - t0) / 1000;
+      render(now);
+      if (now < END) running = requestAnimationFrame(tick);
+      else running = null;
+    };
+    running = requestAnimationFrame(tick);
+  }
+
+  document.getElementById('replay').addEventListener('click', start);
+  start();
+</script>
+</body>
+</html>
