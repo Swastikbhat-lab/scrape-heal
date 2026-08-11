@@ -1,0 +1,155 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { spawn } from 'node:child_process';
+import type { Browser, Page } from 'playwright';
+import type { ScraperConfig, ExtractedItem } from './scraper.js';
+import { extract, validate } from './scraper.js';
+import { heal } from './heal.js';
+
+export interface WatchState {
+  config: ScraperConfig;
+  /** The last extraction that passed validation — the ground truth for repair. */
+  baseline: ExtractedItem[];
+  lastStatus: 'healthy' | 'repaired' | 'red';
+  lastCheckedAt: string;
+  healedAt?: string;
+  alertCount: number;
+}
+
+export interface WatchOptions {
+  /** Seconds between cycles. */
+  intervalSeconds: number;
+  /** Run this many cycles, then exit. Runs forever when absent. */
+  cycles?: number;
+  /** Where state (config + baseline) lives between runs. */
+  statePath: string;
+  /** Shell command run on an unhealed red cycle. Receives the alert summary
+   *  via the SCRAPE_HEAL_ALERT env var. */
+  onAlert?: string;
+  log: (line: string) => void;
+}
+
+export function loadState(statePath: string, config: ScraperConfig): WatchState {
+  if (existsSync(statePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(statePath, 'utf8')) as WatchState;
+      if (parsed.config && parsed.baseline) return parsed;
+    } catch {
+      // corrupt state — start over rather than die
+    }
+  }
+  return {
+    config,
+    baseline: [],
+    lastStatus: 'healthy',
+    lastCheckedAt: new Date().toISOString(),
+    alertCount: 0,
+  };
+}
+
+function saveState(statePath: string, state: WatchState): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileSync(statePath, JSON.stringify(state, null, 2));
+}
+
+function runAlertHook(command: string | undefined, summary: string): void {
+  if (!command) return;
+  const child = spawn(command, { shell: true, env: { ...process.env, SCRAPE_HEAL_ALERT: summary } });
+  child.on('error', (err) => console.error(`  alert hook failed: ${err.message}`));
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Watch one target on a cadence.
+ *
+ * Each cycle: extract → validate against the last good run. Healthy runs
+ * refresh the baseline (legit content changes are re-baselined, so the loop
+ * tracks the real site). A red run is handed to the healer; a verified repair
+ * is shipped and becomes the new baseline; an unverified one alerts loudly and
+ * exits non-zero so a scheduler notices.
+ *
+ * Returns the process exit code: 0 when the final cycle ended healthy or
+ * self-healed, 1 when it ended red.
+ */
+export async function runWatchdog(
+  browser: Browser,
+  page: Page,
+  opts: WatchOptions,
+  /** Full config for a real target. Overrides defaults used for fresh state. */
+  configOverride?: ScraperConfig,
+): Promise<number> {
+  const defaults: ScraperConfig = configOverride ?? {
+    url: '',
+    items: '.product-card',
+    fields: [
+      { name: 'name', selector: '.name' },
+      { name: 'price', selector: '.price' },
+    ],
+    identityField: 'name',
+    minItems: 4,
+  };
+  const state = loadState(opts.statePath, defaults);
+  let config = state.config;
+
+  let exitCode = 0;
+  let cycle = 0;
+  while (true) {
+    cycle++;
+    const checkedAt = new Date().toISOString();
+
+    const items = await extract(config, page);
+    const v = validate(config, items, state.baseline);
+
+    if (v.ok) {
+      state.baseline = items;
+      state.lastStatus = 'healthy';
+      state.lastCheckedAt = checkedAt;
+      exitCode = 0;
+      opts.log(
+        `[cycle ${cycle}] OK — ${items.length} item(s), shape matches the last good run` +
+        (cycle === 1 && items.length ? ' (baseline captured)' : ''),
+      );
+    } else {
+      opts.log(`[cycle ${cycle}] RED — ${v.issues.join('; ')}`);
+
+      const result = await heal(browser, config, state.baseline);
+      if (result.repaired && result.verified) {
+        // The repaired config takes effect immediately — the next cycle must
+        // not re-detect the same break against the stale selectors.
+        config = result.config;
+        state.config = result.config;
+        state.baseline = result.verified;
+        state.lastStatus = 'repaired';
+        state.healedAt = checkedAt;
+        state.lastCheckedAt = checkedAt;
+        exitCode = 0;
+        opts.log(`[cycle ${cycle}] REPAIRED — "${result.config.items}" + ${result.config.fields.map((f) => `${f.name}:"${f.selector}"`).join(', ')}`);
+        for (const a of result.attempts) opts.log(`  ${a}`);
+      } else {
+        state.lastStatus = 'red';
+        state.alertCount += 1;
+        state.lastCheckedAt = checkedAt;
+        exitCode = 1;
+        const summary = `cycle ${cycle}: extraction failed against ${config.url} — ${v.issues.join('; ')}; repair not verified, nothing shipped`;
+        opts.log('');
+        opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        opts.log(`  ${summary}`);
+        opts.log('  heal log:');
+        for (const a of result.attempts) opts.log(`    ${a}`);
+        opts.log('  Nothing was modified. The data is still broken and someone should look.');
+        opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        opts.log('');
+        runAlertHook(opts.onAlert, summary);
+      }
+    }
+
+    state.lastCheckedAt = checkedAt;
+    saveState(opts.statePath, state);
+
+    if (opts.cycles !== undefined && cycle >= opts.cycles) break;
+    await sleep(opts.intervalSeconds * 1000);
+  }
+
+  return exitCode;
+}

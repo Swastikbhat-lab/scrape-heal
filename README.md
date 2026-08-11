@@ -53,10 +53,63 @@ STEP 3 — the healer wakes up. It knows what the data used to look like.
 STEP 4 — repaired, and only because verification passed
   new config: items ".item"
               name -> "h2.title"
-              price -> "span.amount"
-
-  ✓ data is identical to the last good run — nothing lost, nothing invented.
+              price -> "span.amount"  ✓ data is identical to the last good run — nothing lost, nothing invented.
 ```
+
+## Watch it (watchdog mode)
+
+A single run is a snapshot. On a cadence it becomes a watchdog: **the moment a run
+goes red, it either repairs itself or alerts — notifies you the same day, not the
+day after.**
+
+```bash
+# watch the demo fixture — the site "redeploys" after 20s, watch it heal itself
+npm run watch -- --demo --mutate 20 --interval 10
+
+# watch a real target, every 5 minutes
+npm run watch -- \
+  --url http://localhost:5173 \
+  --items .product-card \
+  --fields name=.name,price=.price \
+  --min 4 --identity name \
+  --interval 300
+```
+
+Each cycle: **extract → validate against the last good run.** Healthy cycles refresh
+the baseline (so legit new content is tracked, not treated as breakage). A red cycle
+is handed to the healer — a verified repair is shipped and becomes the new baseline;
+when nothing can be verified, it says so loudly and nothing is modified:
+
+```
+[cycle 3] RED — expected at least 4 item(s), got 0
+[cycle 3] REPAIRED — ".item" + name:"h2.title", price:"span.amount"
+[cycle 4] OK — 4 item(s), shape matches the last good run
+
+━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  cycle 2: extraction failed against http://… — expected at least 4 item(s), got 0;
+  repair not verified, nothing shipped
+  heal log:
+    heal: no element on the page still contains any known "name" value —
+          the redesign may have changed the data itself.
+  Nothing was modified. The data is still broken and someone should look.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Exit codes, for schedulers:** the process exits `0` when the last cycle ended
+healthy or self-healed, and `1` when it ended red and unhealed — so a cron job or
+CI pipeline can fail loudly. Pass `--on-alert "command"` to run something the
+moment a cycle goes red (a webhook, a desktop notification); the one-line alert
+summary is passed to it as the `SCRAPE_HEAL_ALERT` env var:
+
+```bash
+npm run watch -- --url … --interval 300 \
+  --on-alert 'curl -s -X POST -H "Content-Type: application/json" \
+    -d "{\"text\": \"$SCRAPE_HEAL_ALERT\"}" https://hooks.slack.com/services/…'
+```
+
+State (the current selectors + the last good run) persists in `.scrape-heal/state.json`,
+so a restart picks up where the last run left off — including a config a previous
+cycle already repaired.
 
 ## How it works
 
@@ -86,12 +139,14 @@ Three moving parts, each boring on purpose:
 
 ## What's next (honestly)
 
-This is a PoC, ~300 lines, deliberately. The interesting next steps:
+This is a PoC, deliberately small. Shipped so far: the detect → heal → verify
+loop and watchdog mode. The interesting next steps:
 
 - **LLM-assisted repair** for the cases text-matching can't reach (selectors whose
   *values* changed too — then you need to infer intent from structure).
-- **Watchdog mode** — run on a cadence, alert the moment a run goes red instead of
-  the day after.
+- **Remembering healed configs** — a mini-ledger of previously-proven selectors,
+  so a site that flip-flops between markup versions stops being re-healed every
+  cycle.
 - **Any scraper, any framework** — this is a loop, not a scraper; wiring it to
   Playwright/Puppeteer/Scrapy output is an adapter, not a rewrite.
 - **The anti-detection arms race** is real and this isn't that. This is about the
