@@ -1,4 +1,4 @@
-import { copyFileSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,17 +6,25 @@ import { chromium } from 'playwright';
 import type { ScraperConfig } from './scraper.js';
 import { runWatchdog } from './watchdog.js';
 import { commandRows, fileRows, type RowFetch } from './source.js';
+import {
+  CONFIG_FILENAME, readConfigFile, fieldsFrom, initConfig, type WatchFileConfig,
+} from './config.js';
 
 /**
  * Watchdog mode: run the detect → heal → verify loop on a cadence.
  *
+ * Plug-and-play is a config file, not flags:
+ *
+ *   npm run init                    # writes scraper.config.json template
+ *   # ... fill in url/items/fields ...
+ *   npm run watch                   # reads scraper.config.json automatically
+ *
+ * Flags override the file. Quick demos still work flag-free:
+ *
  *   npm run watch -- --demo --mutate 12 --interval 5 --cycles 8
- *   npm run watch -- --url http://localhost:5173 --items .card \
- *     --fields name=.name,price=.price --min 4 --identity name --interval 300
  *
  * A cycle that breaks AND cannot be verified-repaired exits non-zero, so a
- * scheduler (cron, CI) sees it. Pass --on-alert "cmd" to run something (a
- * webhook, a desktop notification) the moment a cycle goes red.
+ * scheduler (cron, CI) sees it.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,21 +47,40 @@ for (let i = 2; i < process.argv.length; i++) {
   }
 }
 
-const interval = Number(args.get('interval') ?? 10);
-if (!Number.isFinite(interval) || interval <= 0) {
-  console.error('--interval takes a positive number of seconds');
-  process.exit(2);
+// ---- --init: write a template config and stop ------------------------------
+if (args.has('init')) {
+  const path = args.get('init') === 'true' ? CONFIG_FILENAME : args.get('init')!;
+  const wrote = initConfig(path, args.has('force'));
+  if (wrote) {
+    console.log(`wrote ${path} — fill in url/items/fields, then: npm run watch`);
+  } else {
+    console.error(`${path} already exists — use --force to overwrite`);
+    process.exit(1);
+  }
+  process.exit(0);
 }
-const cycles = args.has('cycles') ? Number(args.get('cycles')) : undefined;
-if (cycles !== undefined && (!Number.isFinite(cycles) || cycles <= 0)) {
-  console.error('--cycles takes a positive number');
-  process.exit(2);
+
+// ---- load the file config ---------------------------------------------------
+const filePath = args.get('config') ?? (existsSync(CONFIG_FILENAME) ? CONFIG_FILENAME : null);
+let fileCfg: WatchFileConfig = {};
+if (filePath) {
+  try {
+    fileCfg = readConfigFile(filePath);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(2);
+  }
 }
-const mutateEvery = args.has('mutate') ? Number(args.get('mutate')) : undefined;
 
 const isDemo = args.has('demo');
-const rowsFrom = args.get('rows-from');
-const rowsFile = args.get('rows-file');
+if (isDemo && args.has('config')) {
+  console.error('--demo runs the fixture itself; do not combine it with --config');
+  process.exit(2);
+}
+
+// ---- flags override the file ------------------------------------------------
+const rowsFrom = args.get('rows-from') ?? fileCfg.rowsFrom;
+const rowsFile = args.get('rows-file') ?? fileCfg.rowsFile;
 if (rowsFrom && rowsFile) {
   console.error('use --rows-from OR --rows-file, not both');
   process.exit(2);
@@ -67,9 +94,21 @@ if (isDemo && (args.has('url') || args.has('items'))) {
   process.exit(2);
 }
 
-// ---- demo fixture server ---------------------------------------------------
-// Re-reads the file on every request, so swapping fixture/current.html (which
-// --mutate does on a timer) changes the site under the watcher.
+const interval = Number(args.get('interval') ?? fileCfg.intervalSeconds ?? 10);
+if (!Number.isFinite(interval) || interval <= 0) {
+  console.error('interval must be a positive number of seconds (config key: intervalSeconds)');
+  process.exit(2);
+}
+const cycles = args.has('cycles')
+  ? Number(args.get('cycles'))
+  : fileCfg.cycles ?? undefined;
+if (cycles !== undefined && (!Number.isFinite(cycles) || cycles <= 0)) {
+  console.error('--cycles takes a positive number');
+  process.exit(2);
+}
+const mutateEvery = args.has('mutate') ? Number(args.get('mutate')) : undefined;
+
+// ---- demo fixture server ----------------------------------------------------
 let server: ReturnType<typeof createServer> | null = null;
 if (isDemo) {
   copyFileSync(fixture('site-v1.html'), current);
@@ -79,10 +118,18 @@ if (isDemo) {
   });
   await new Promise<void>((ok) => server!.listen(0, '127.0.0.1', ok));
 }
+const port = server ? (server.address() as { port: number }).port : 0;
 
-const port = server
-  ? (server.address() as { port: number }).port
-  : 0;
+// ---- the scraper config ------------------------------------------------------
+const fields = fieldsFrom(fileCfg.fields, undefined) ?? (args.get('fields') ?? 'name=.name,price=.price')
+  .split(',')
+  .filter(Boolean)
+  .map((pair) => {
+    const eq = pair.indexOf('=');
+    return eq === -1
+      ? { name: pair, selector: pair }
+      : { name: pair.slice(0, eq), selector: pair.slice(eq + 1) };
+  });
 
 const config: ScraperConfig = isDemo
   ? {
@@ -96,30 +143,21 @@ const config: ScraperConfig = isDemo
       minItems: 4,
     }
   : {
-      url: args.get('url') ?? '',
-      items: args.get('items') ?? '.product-card',
-      fields: (args.get('fields') ?? 'name=.name,price=.price')
-        .split(',')
-        .filter(Boolean)
-        .map((pair) => {
-          const eq = pair.indexOf('=');
-          return eq === -1
-            ? { name: pair, selector: pair }
-            : { name: pair.slice(0, eq), selector: pair.slice(eq + 1) };
-        }),
-      identityField: args.get('identity') ?? 'name',
-      minItems: Number(args.get('min') ?? 4),
+      url: args.get('url') ?? fileCfg.url ?? '',
+      items: args.get('items') ?? fileCfg.items ?? '.product-card',
+      fields,
+      identityField: args.get('identity') ?? fileCfg.identityField ?? 'name',
+      minItems: Number(args.get('min') ?? fileCfg.minItems ?? 4),
     };
 
 if (!config.url) {
-  console.error('usage: --url <target> --items <sel> --fields name=.name,price=.price --min 4 --identity name  (or --demo)');
+  console.error(
+    `no target — run \`npm run init\` to create ${CONFIG_FILENAME}, or pass --url <target> (or --demo)`,
+  );
   process.exit(2);
 }
 
-// ---- mutate mode: the site redeploys once, after N seconds ----------------
-// One flip keeps the demo readable: healthy → RED → REPAIRED → healthy again.
-// A flip-flopping site would make the watcher look like it's thrashing when
-// it's actually just tracking whichever markup is live.
+// ---- mutate mode: the site redeploys once, after N seconds ------------------
 if (mutateEvery !== undefined) {
   setTimeout(() => {
     copyFileSync(fixture('site-v2.html'), current);
@@ -133,10 +171,15 @@ const fetchRows: RowFetch | undefined = rowsFrom
     ? fileRows(rowsFile)
     : undefined;
 
+const statePath = args.get('state') ?? fileCfg.statePath ?? DEFAULT_STATE;
+const writeConfigPath = args.get('write-config') ?? fileCfg.writeConfig;
+const onAlert = args.get('on-alert') ?? fileCfg.onAlert;
+
 console.log(`  watching ${config.url || '(rows source)'} every ${interval}s${cycles ? ` for ${cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}${fetchRows ? ' (rows from an external scraper)' : ''}`);
-console.log(`  state → ${args.get('state') ?? DEFAULT_STATE}`);
-if (args.has('on-alert')) console.log('  alert hook armed: ' + args.get('on-alert'));
-if (fetchRows && !config.url) console.log('  detection only — add --url to enable self-healing');
+if (filePath) console.log(`  config → ${filePath}`);
+console.log(`  state → ${statePath}`);
+if (onAlert) console.log('  alert hook armed');
+if (fetchRows && !config.url) console.log('  detection only — set url to enable self-healing');
 console.log('');
 
 const browser = await chromium.launch();
@@ -145,10 +188,10 @@ const page = await browser.newPage();
 const exitCode = await runWatchdog(browser, page, {
   intervalSeconds: interval,
   cycles,
-  statePath: args.get('state') ?? DEFAULT_STATE,
-  onAlert: args.get('on-alert'),
+  statePath,
+  onAlert,
   fetchRows,
-  writeConfigPath: args.get('write-config'),
+  writeConfigPath,
   log: (line) => console.log(line),
 }, config);
 

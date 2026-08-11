@@ -10,6 +10,7 @@
   "scripts": {
     "demo": "tsx src/demo.ts",
     "demo:any": "tsx src/demo-any.ts",
+    "init": "tsx src/cli.ts --init",
     "watch": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
     "make:gif": "node scripts/make-demo-gif.mjs"

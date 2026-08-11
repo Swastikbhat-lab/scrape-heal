@@ -56,6 +56,39 @@ STEP 4 — repaired, and only because verification passed
               price -> "span.amount"  ✓ data is identical to the last good run — nothing lost, nothing invented.
 ```
 
+## Plug and play
+
+One config file, one command. No flags to memorize:
+
+```bash
+npm run init        # writes scraper.config.json with every option, commented
+# ... edit url, items, fields ...
+npm run watch       # reads scraper.config.json automatically
+```
+
+`scraper.config.json` is a single JSON object — every key optional, CLI flags
+override the file when both are present:
+
+```jsonc
+{
+  "url": "https://example.com/products",   // what to watch
+  "items": ".product-card",               // repeating item container
+  "fields": { "name": ".name", "price": ".price" },
+  "identityField": "name",                // identifies one item uniquely
+  "minItems": 4,                          // below this = broken
+  "intervalSeconds": 300,                 // watchdog cadence
+  "rowsFrom": null,                       // or: run any scraper, read JSON/CSV rows
+  "writeConfig": "scraper.config.json",   // repaired selectors, written back here
+  "onAlert": null,                        // command run on an unhealable red cycle
+  "statePath": ".scrape-heal/state.json"
+}
+```
+
+The same loop is also a small library — `runWatchdog` (the whole watch loop),
+`commandRows`/`fileRows` (rows from any scraper), and the `extract`/`validate`/`heal`
+pieces are all exported from `src/index.ts`, so you can embed the loop in your own
+scheduler or app instead of running the CLI.
+
 ## Watch it (watchdog mode)
 
 A single run is a snapshot. On a cadence it becomes a watchdog: **the moment a run

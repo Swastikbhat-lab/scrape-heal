@@ -1,4 +1,5 @@
 node_modules/
 fixture/current.html
 .scrape-heal/
+scraper.config.json
 *.log
