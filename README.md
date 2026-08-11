@@ -65,6 +65,7 @@ On a cadence it becomes a watchdog — cycle after cycle, a red run repairs itse
 npm install
 npx playwright install chromium
 npm run demo        # watch the full break-and-recover cycle
+npm test            # the suite: validate, parse, proposals, ledger, heal end-to-end
 ```
 
 Then point it at something real:

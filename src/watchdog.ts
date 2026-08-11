@@ -95,13 +95,14 @@ function runAlertHook(command: string | undefined, summary: string): void {
 
 const LEDGER_MAX = 8;
 
-function configSignature(config: ScraperConfig): string {
+/** A config's identity — the selectors, not the URL. Exported for tests. */
+export function configSignature(config: ScraperConfig): string {
   const fields = [...config.fields].sort((a, b) => a.name.localeCompare(b.name));
   return JSON.stringify({ items: config.items, fields, identityField: config.identityField });
 }
 
-/** Remember a proven config, newest first, deduped by its selectors. */
-function rememberLedger(state: WatchState, config: ScraperConfig, now: string): void {
+/** Remember a proven config, newest first, deduped by its selectors. Exported for tests. */
+export function rememberLedger(state: WatchState, config: ScraperConfig, now: string): void {
   const sig = configSignature(config);
   const rest = state.ledger.filter((e) => configSignature(e.config) !== sig);
   state.ledger = [{ config, verifiedAt: now, hits: 0 }, ...rest].slice(0, LEDGER_MAX);
