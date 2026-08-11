@@ -3,8 +3,9 @@ import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Browser, Page } from 'playwright';
 import type { ScraperConfig, ExtractedItem } from './scraper.js';
-import { extract, validate } from './scraper.js';
+import { validate } from './scraper.js';
 import { heal } from './heal.js';
+import { playwrightRows, type RowFetch } from './source.js';
 
 export interface WatchState {
   config: ScraperConfig;
@@ -26,6 +27,12 @@ export interface WatchOptions {
   /** Shell command run on an unhealed red cycle. Receives the alert summary
    *  via the SCRAPE_HEAL_ALERT env var. */
   onAlert?: string;
+  /** How rows are obtained each cycle. Defaults to Playwright extraction;
+   *  pass a command/file source to watch any other scraper. */
+  fetchRows?: RowFetch;
+  /** When a repair is verified and shipped, also write the new selector
+   *  config here (JSON) so any external scraper can read it back. */
+  writeConfigPath?: string;
   log: (line: string) => void;
 }
 
@@ -90,7 +97,20 @@ export async function runWatchdog(
     minItems: 4,
   };
   const state = loadState(opts.statePath, defaults);
+
+  // Persisted state resumes the last config for a target — including repaired
+  // selectors — but only when it really is the same target. A different
+  // requested URL means a new job: don't apply the old target's healed
+  // selectors (or its baseline) to it.
+  if (configOverride?.url && configOverride.url !== state.config.url) {
+    state.config = configOverride;
+    state.baseline = [];
+    state.alertCount = 0;
+    state.lastStatus = 'healthy';
+  }
+
   let config = state.config;
+  const fetchRows = opts.fetchRows ?? playwrightRows(page, config);
 
   let exitCode = 0;
   let cycle = 0;
@@ -98,7 +118,27 @@ export async function runWatchdog(
     cycle++;
     const checkedAt = new Date().toISOString();
 
-    const items = await extract(config, page);
+    const items = await fetchRows();
+    if (items === null) {
+      // The scraper itself failed — a crash is not a site change, and healing
+      // it would be guessing about which of the two is broken. Alert instead.
+      state.lastStatus = 'red';
+      state.alertCount += 1;
+      state.lastCheckedAt = checkedAt;
+      exitCode = 1;
+      opts.log(`[cycle ${cycle}] RED — the scraper source failed to produce rows`);
+      opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      opts.log(`  cycle ${cycle}: the scraper command errored or emitted no parseable output`);
+      opts.log('  This is a scraper failure, not a site change — check the scraper itself.');
+      opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      opts.log('');
+      runAlertHook(opts.onAlert, `cycle ${cycle}: scraper source failed to produce rows`);
+      saveState(opts.statePath, state);
+      if (opts.cycles !== undefined && cycle >= opts.cycles) break;
+      await sleep(opts.intervalSeconds * 1000);
+      continue;
+    }
+
     const v = validate(config, items, state.baseline);
 
     if (v.ok) {
@@ -113,6 +153,26 @@ export async function runWatchdog(
     } else {
       opts.log(`[cycle ${cycle}] RED — ${v.issues.join('; ')}`);
 
+      // Healing needs the live page; a rows-only source without --url cannot
+      // repair, only detect and alert.
+      if (!config.url) {
+        state.lastStatus = 'red';
+        state.alertCount += 1;
+        state.lastCheckedAt = checkedAt;
+        exitCode = 1;
+        opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        opts.log(`  cycle ${cycle}: ${v.issues.join('; ')}`);
+        opts.log('  No --url was given, so the loop cannot re-measure the page to repair.');
+        opts.log('  Add --url <target> to enable self-healing; until then, detection only.');
+        opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        opts.log('');
+        runAlertHook(opts.onAlert, `cycle ${cycle}: ${v.issues.join('; ')}`);
+        saveState(opts.statePath, state);
+        if (opts.cycles !== undefined && cycle >= opts.cycles) break;
+        await sleep(opts.intervalSeconds * 1000);
+        continue;
+      }
+
       const result = await heal(browser, config, state.baseline);
       if (result.repaired && result.verified) {
         // The repaired config takes effect immediately — the next cycle must
@@ -124,6 +184,10 @@ export async function runWatchdog(
         state.healedAt = checkedAt;
         state.lastCheckedAt = checkedAt;
         exitCode = 0;
+        if (opts.writeConfigPath) {
+          writeConfig(opts.writeConfigPath, result.config);
+          opts.log(`  config written → ${opts.writeConfigPath}`);
+        }
         opts.log(`[cycle ${cycle}] REPAIRED — "${result.config.items}" + ${result.config.fields.map((f) => `${f.name}:"${f.selector}"`).join(', ')}`);
         for (const a of result.attempts) opts.log(`  ${a}`);
       } else {
@@ -152,4 +216,15 @@ export async function runWatchdog(
   }
 
   return exitCode;
+}
+
+/** Write the selector config as plain JSON, for any scraper to read back. */
+function writeConfig(path: string, config: ScraperConfig): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    items: config.items,
+    fields: config.fields,
+    identityField: config.identityField,
+    minItems: config.minItems,
+  }, null, 2));
 }

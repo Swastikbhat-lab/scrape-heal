@@ -111,6 +111,47 @@ State (the current selectors + the last good run) persists in `.scrape-heal/stat
 so a restart picks up where the last run left off — including a config a previous
 cycle already repaired.
 
+## Any scraper, not just Playwright
+
+The loop's contract with your scraper is one sentence: **give me the rows.** It
+validates rows, remembers the last good ones, and — when they break — finds the new
+selectors in the browser and hands them back. The scraper that produced the rows is
+irrelevant; Playwright is just the built-in source.
+
+```bash
+npm run demo:any
+```
+
+That demo swaps the Playwright scraper for a deliberately dumb one — plain `fetch` +
+regex, no DOM parser — and the loop fixes it exactly the same way: detects the
+redesign, finds `.item`/`h2.title`/`span.amount`, verifies the repair, and writes the
+new selectors to a JSON config the dumb scraper reads on its next run. No code changes.
+
+To watch **your** scraper on a cadence — Scrapy, Puppeteer, `requests`+bs4, a cron
+dump, anything that can print rows:
+
+```bash
+# rows as JSON or CSV on stdout
+npm run watch -- \
+  --rows-from "python my_scrapy_spider.py --output json" \
+  --url https://target.example \
+  --min 4 --identity name \
+  --interval 300 \
+  --write-config scraper.config.json   # repaired selectors, for your scraper to read
+```
+
+- `--rows-from "<cmd>"` — run the command each cycle and parse its stdout as a JSON
+  array or CSV (header row). `--rows-file <path>` does the same for a file.
+- `--url` is only needed for self-healing (the browser has to re-measure the page).
+  Without it the loop is a plain detector: it validates and alerts, and refuses to
+  guess at repairs.
+- A scraper that **crashes** (non-zero exit, no parseable output) is reported as a
+  scraper failure, not a site change — the loop never tries to "heal" a scraper that
+  merely errored.
+- On a verified repair, `--write-config` writes `{items, fields, identityField,
+  minItems}` so your scraper can read the new selectors back. Pointing the scraper at
+  that file is the one line of glue you own.
+
 ## How it works
 
 Three moving parts, each boring on purpose:
@@ -139,16 +180,16 @@ Three moving parts, each boring on purpose:
 
 ## What's next (honestly)
 
-This is a PoC, deliberately small. Shipped so far: the detect → heal → verify
-loop and watchdog mode. The interesting next steps:
+This is a PoC, deliberately small. Shipped so far: the detect → heal → verify loop,
+watchdog mode, and the any-scraper row contract. The interesting next steps:
 
 - **LLM-assisted repair** for the cases text-matching can't reach (selectors whose
   *values* changed too — then you need to infer intent from structure).
 - **Remembering healed configs** — a mini-ledger of previously-proven selectors,
   so a site that flip-flops between markup versions stops being re-healed every
   cycle.
-- **Any scraper, any framework** — this is a loop, not a scraper; wiring it to
-  Playwright/Puppeteer/Scrapy output is an adapter, not a rewrite.
+- **CSV/scraper-agnostic verification hooks** — plug your own validator (e.g., a
+  schema you already own) in place of the built-in shape checks.
 - **The anti-detection arms race** is real and this isn't that. This is about the
   99% case: markup changed, data still there, nobody noticed.
 

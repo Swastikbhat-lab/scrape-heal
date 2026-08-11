@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import type { ScraperConfig } from './scraper.js';
 import { runWatchdog } from './watchdog.js';
+import { commandRows, fileRows, type RowFetch } from './source.js';
 
 /**
  * Watchdog mode: run the detect → heal → verify loop on a cadence.
@@ -51,6 +52,16 @@ if (cycles !== undefined && (!Number.isFinite(cycles) || cycles <= 0)) {
 const mutateEvery = args.has('mutate') ? Number(args.get('mutate')) : undefined;
 
 const isDemo = args.has('demo');
+const rowsFrom = args.get('rows-from');
+const rowsFile = args.get('rows-file');
+if (rowsFrom && rowsFile) {
+  console.error('use --rows-from OR --rows-file, not both');
+  process.exit(2);
+}
+if ((rowsFrom || rowsFile) && isDemo) {
+  console.error('--demo serves the fixture itself; use --rows-from/--rows-file with a real target');
+  process.exit(2);
+}
 if (isDemo && (args.has('url') || args.has('items'))) {
   console.error('--demo serves the fixture itself; do not combine it with --url/--items');
   process.exit(2);
@@ -116,9 +127,16 @@ if (mutateEvery !== undefined) {
   }, mutateEvery * 1000);
 }
 
-console.log(`  watching ${config.url} every ${interval}s${cycles ? ` for ${cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}`);
-console.log(`  state → ${DEFAULT_STATE}`);
+const fetchRows: RowFetch | undefined = rowsFrom
+  ? commandRows(rowsFrom)
+  : rowsFile
+    ? fileRows(rowsFile)
+    : undefined;
+
+console.log(`  watching ${config.url || '(rows source)'} every ${interval}s${cycles ? ` for ${cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}${fetchRows ? ' (rows from an external scraper)' : ''}`);
+console.log(`  state → ${args.get('state') ?? DEFAULT_STATE}`);
 if (args.has('on-alert')) console.log('  alert hook armed: ' + args.get('on-alert'));
+if (fetchRows && !config.url) console.log('  detection only — add --url to enable self-healing');
 console.log('');
 
 const browser = await chromium.launch();
@@ -129,6 +147,8 @@ const exitCode = await runWatchdog(browser, page, {
   cycles,
   statePath: args.get('state') ?? DEFAULT_STATE,
   onAlert: args.get('on-alert'),
+  fetchRows,
+  writeConfigPath: args.get('write-config'),
   log: (line) => console.log(line),
 }, config);
 
