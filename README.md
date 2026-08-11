@@ -27,8 +27,8 @@ flowchart LR
     B -->|"same shape ✓"| C["refresh baseline"]
     B -->|"broken ✗"| D["hunt the known values<br/>on the live page"]
     D --> E["verify: re-extract<br/>must match"]
-    E -->|"pass"| F["🚢 ship the repair"]
-    E -->|"fail"| G["🚨 alert — change nothing"]
+    E -->|"pass"| F[" ship the repair"]
+    E -->|"fail"| G[" alert — change nothing"]
 ```
 
 Three moving parts, each boring on purpose:
