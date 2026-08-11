@@ -67,7 +67,10 @@ export interface HealerPlugin extends BasePlugin {
    * Attempt to heal a broken config. Receives the page (navigated to the
    * target URL), the failing config, and the last good baseline. Return
    * null to fall through; return a new config + the extracted verification
-   * data to claim success.
+   * data to claim success. The claim is a proposal, not proof: the loop
+   * re-extracts with your config on the live page and runs the same verify
+   * gate (shape + identities + value types) before anything ships — a claim
+   * that fails the gate falls through to the built-in healer.
    */
   heal: (
     page: Page,

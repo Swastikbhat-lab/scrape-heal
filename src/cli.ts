@@ -450,6 +450,20 @@ if (targets.length > 0) {
   for (const s of specs) {
     s.validator = await loadValidatorOpt(s.validatorPath);
   }
+  // Plugins load into one shared registry (they are matched per URL, so
+  // per-target plugin dirs coexist); the loop hooks them ahead of the
+  // built-in extractor and healer.
+  for (const s of specs) {
+    if (s.pluginsDir) {
+      try {
+        const { loadPlugins } = await import('./plugins.js');
+        const n = await loadPlugins(s.pluginsDir);
+        if (n) console.log(`  [${s.label}] ${n} plugin(s) loaded from ${s.pluginsDir}`);
+      } catch (err) {
+        console.error(`  [${s.label}] plugins: ${(err as Error).message}`);
+      }
+    }
+  }
 
   console.log(`  watching ${specs.length} target(s)…`);
   if (filePath) console.log(`  config → ${filePath}`);

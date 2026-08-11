@@ -2,14 +2,14 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Browser, BrowserContext, Page } from 'playwright';
-import type { ScraperConfig, ExtractedItem, Validator } from './scraper.js';
+import type { ScraperConfig, ExtractedItem, Validator, Extraction } from './scraper.js';
 import { extract, validate } from './scraper.js';
 import { heal, siteOrigin } from './heal.js';
 import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import { sendAlert, type AlertChannel } from './alert.js';
 import { authenticate, type AuthConfig, type AuthHandle } from './auth.js';
 import { captureEvidence, type CycleEvidence } from './evidence.js';
-import { playwrightRows, type RowFetch, type RowResult } from './source.js';
+import { type RowFetch, type RowResult } from './source.js';
 import {
   ProxyPool, proxyLaunchOptions,
   type ProxyEntry, type ProxyPoolOptions,
@@ -19,7 +19,8 @@ import type { PaginationConfig, PagedResult } from './pagination.js';
 import { extractAllPages } from './pagination.js';
 import type { Pipeline } from './pipeline.js';
 import { runPipelines } from './pipeline.js';
-import { tryExtractors, tryHealers, applyTransforms } from './plugins.js';
+import { tryExtractors, tryHealers, findPlugins, applyTransforms } from './plugins.js';
+import { verifyValueTypes } from './valuetypes.js';
 import {
   diffChanges, formatChanges, matchesThresholds, reportHasChanges,
   type ChangeReport, type ChangeThreshold,
@@ -293,6 +294,64 @@ async function tryLedger(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * The page-based extraction, plugin-aware: registered extractor plugins get
+ * first shot (the page is navigated once, then each matching plugin tries);
+ * when they all fall through, the built-in extraction runs. The built-in
+ * extract's failure classification (transient/block/breakage) still governs
+ * the result.
+ */
+async function pageExtraction(page: Page, config: ScraperConfig): Promise<Extraction> {
+  if (findPlugins('extractor', config.url).length > 0) {
+    try {
+      await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 });
+    } catch (err) {
+      return { items: [], failed: { kind: 'transient', message: (err as Error).message } };
+    }
+    const rows = await tryExtractors(page, config);
+    if (rows !== null) return { items: rows };
+  }
+  return extract(config, page);
+}
+
+/**
+ * Site-specific repair: healer plugins get the first shot — ahead of the
+ * ledger and the built-in healer. A plugin's claimed config is a proposal
+ * like any other: it ships only after the same gate re-extracts the live
+ * page and shape, identities, and value types all hold. A claim that fails
+ * the gate falls through to the next strategy (ledger, then built-in heal).
+ */
+async function tryPluginHealers(
+  browser: Browser,
+  context: BrowserContext | undefined,
+  config: ScraperConfig,
+  baseline: ExtractedItem[],
+  validator: Validator | undefined,
+  verifyTypes: boolean | undefined,
+): Promise<{ config: ScraperConfig; data: ExtractedItem[] } | null> {
+  if (findPlugins('healer', config.url).length === 0) return null;
+  const page = context ? await context.newPage() : await browser.newPage();
+  try {
+    await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 }).catch(() => {});
+    const claimed = await tryHealers(page, config, baseline);
+    if (!claimed) return null;
+    // The same gate as every other repair path — the plugin's own `verified`
+    // data is a claim, not proof. Re-extract with the claimed config and
+    // only ship when the rows still look like the last good run.
+    const check = await extract(claimed.config, page);
+    if (check.failed) return null; // a blocked or dead page is no evidence
+    const v = validate(claimed.config, check.items, baseline, validator);
+    if (!v.ok) return null;
+    if (verifyTypes !== false && !validator) {
+      const types = verifyValueTypes(claimed.config.fields, check.items, baseline);
+      if (types.length) return null;
+    }
+    return { config: claimed.config, data: check.items };
+  } finally {
+    await page.close();
+  }
+}
+
+/**
  * Screenshot + DOM-dump the page that just failed, and record why.
  *
  * Uses the passed-in page when it is already on the target (the non-proxy
@@ -356,7 +415,8 @@ function proxyAwareFetch(
   getConfig: () => ScraperConfig,
   pool: ProxyPool,
   log: (line: string) => void,
-  authContext?: BrowserContext,
+  authContext: BrowserContext | undefined,
+  extractPage: (page: Page, config: ScraperConfig) => Promise<Extraction>,
 ): RowFetch {
   let entry: ProxyEntry | null = null;
   return async () => {
@@ -370,7 +430,7 @@ function proxyAwareFetch(
       : await browser.newContext({ ...(storageState ? { storageState } : {}) });
     const page = await ctx.newPage();
     try {
-      const result = await extract(getConfig(), page);
+      const result = await extractPage(page, getConfig());
       if (!entry) return result;
       if (result.failed?.kind === 'block') {
         // The site refused us — this proxy is the problem (or at least not
@@ -472,8 +532,8 @@ export async function runWatchdog(
   // fetch runs through the current proxy so a block rotates to the next one;
   // with auth, the session rides along into each per-fetch context.
   const fetchRows = opts.fetchRows ?? (proxyPool
-    ? proxyAwareFetch(browser, () => config, proxyPool, opts.log, authContext)
-    : playwrightRows(loopPage, () => config));
+    ? proxyAwareFetch(browser, () => config, proxyPool, opts.log, authContext, pageExtraction)
+    : () => pageExtraction(loopPage, config));
 
   const maxFetchAttempts = opts.maxFetchAttempts ?? MAX_FETCH_ATTEMPTS;
 
@@ -672,13 +732,40 @@ export async function runWatchdog(
         continue;
       }
 
-      // ---- the ledger: remembered configs first --------------------------
+      // ---- healer plugins first: site-specific knowledge --------------
+      // A plugin that knows this site's rename patterns ("Acme always prefixes
+      // classes with v2-") is more specific than memory or the built-in healer.
+      // Its claimed config still has to pass the same verify gate before it ships.
+      const pluginHeal = await tryPluginHealers(
+        browser, authContext, config, state.baseline, opts.validator, opts.verifyTypes,
+      );
+
+      // ---- the ledger: remembered configs -------------------------------
       // A site that flip-flops between markup versions (A/B rollouts, cached
       // deploys, rollbacks) hits a previously-proven config before the healer
       // re-derives one from scratch. Same verify-then-ship gate — the memory
       // is what makes a flip cost nothing.
-      const remembered = await tryLedger(browser, state, opts.validator, authContext);
-      if (remembered) {
+      const remembered = pluginHeal
+        ? null
+        : await tryLedger(browser, state, opts.validator, authContext);
+      if (pluginHeal) {
+        config = pluginHeal.config;
+        state.config = pluginHeal.config;
+        state.baseline = pluginHeal.data;
+        state.lastStatus = 'repaired';
+        state.healedAt = checkedAt;
+        state.lastCheckedAt = checkedAt;
+        exitCode = 0;
+        if (opts.writeConfigPath) {
+          writeConfig(opts.writeConfigPath, pluginHeal.config);
+          opts.log(`  config written → ${opts.writeConfigPath}`);
+        }
+        opts.log(
+          `[cycle ${cycle}] PLUGIN HEALED — "${pluginHeal.config.items}" + ${pluginHeal.config.fields.map((f) => `${f.name}:"${f.selector}"`).join(', ')}`,
+        );
+        opts.log('  a healer plugin claimed the fix and the verify gate confirmed it on the live page');
+        rememberLedger(state, pluginHeal.config, checkedAt);
+      } else if (remembered) {
         config = remembered.config;
         state.config = remembered.config;
         state.baseline = remembered.data;

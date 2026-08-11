@@ -61,7 +61,7 @@ Three moving parts, each boring on purpose:
 | **Proxy rotation** | scored pool with cooldown, backoff, and block detection | `proxy` |
 | **Auth** | pages behind a login — session held across cycles, scraped and healed like any other | `auth` |
 | **Pipelines** | send healthy rows downstream: webhook, file, Postgres, MySQL | `pipelines` |
-| **Plugins** | extend the loop: extractors, site-specific healers, transforms | `pluginsDir` |
+| **Plugins** | extend the loop — extractors, site-specific healers, and transforms, all wired ahead of the built-ins | `pluginsDir` |
 | **Visual extraction** | reads a redesigned grid straight off the pixels (OCR seam included) | visual |
 | **REST API** | run the loop as an HTTP service — cron-friendly, SSE events | `startApi` |
 | **Change watching** | diff every healthy cycle — price drops, restocks, new items — alert on thresholds | `watch` |
@@ -526,9 +526,16 @@ registerPlugin({ name: 'my-healer', kind: 'healer',
 await loadPlugins('./my-plugins/');
 ```
 
-**Transform plugins are wired into the loop.** Extractor and healer plugins are ready on the
-library (`tryExtractors` / `tryHealers`) — hooking them ahead of the built-in extractor/healer in
-the watchdog is the integration step on deck.
+**All three kinds are wired into the loop.** Extractor plugins get first shot
+at the fetch (both the plain and the proxy-routed paths) — the page is
+navigated once, each matching extractor tries, and the built-in extractor runs
+only when they all fall through. Healer plugins get first shot at a red cycle,
+ahead of the selector ledger and the built-in healer — and a plugin's claimed
+config is a proposal like any other: it ships only after the verify gate
+re-extracts the live page and shape, identities, and value types all hold.
+A claim that fails the gate falls through to the ledger, then the built-in
+healer. In fleet mode each target's `pluginsDir` loads into the shared
+registry (plugins are matched per URL, so they coexist).
 
 ## When even the DOM is a blank (v2 visual extraction)
 
@@ -829,8 +836,6 @@ v2 shipped the pieces; v3 added change watching and failure classification
 (transient retries, proxy rotation on blocks, heal-only-on-breakage). The
 remaining seams:
 
-- **Hook extractor/healer plugins into the loop** — transforms run already; extractors and
-  healers should be tried before the built-ins.
 - **Auto-detect pagination** — `detectPagination()` exists; a `--pagination auto` mode would
   adopt a detected strategy on first sight.
 - **OCR engines** — the seam is built; a bundled Tesseract-WASM fallback would make the canvas
