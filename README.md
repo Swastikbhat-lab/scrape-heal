@@ -11,7 +11,7 @@ just an empty spreadsheet you notice a week later.
 `scrape-heal` remembers what your data looked like, notices when it stops looking like that, and
 repairs its own selectors — **only after proving the repair works on the live page.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
 [![Playwright](https://img.shields.io/badge/powered%20by-Playwright-2f9e44?logo=playwright&logoColor=white)](#)
@@ -44,9 +44,18 @@ Three moving parts, each boring on purpose:
 
 ## See it happen
 
-| One run: detect → heal → verify | On a cadence: the watchdog |
-| :---: | :---: |
-| <img src="docs/demo.gif" alt="demo: healthy run, silent redesign, breakage detected, selectors repaired and verified" width="640"> | <img src="docs/watchdog.gif" alt="watchdog: OK → OK → RED → REPAIRED → OK, cycle after cycle" width="640"> |
+The whole story in 24 seconds — healthy run, silent redesign, breakage detected, selectors
+healed, verified on the live page:
+
+<div align="center">
+  <img src="docs/demo.gif" alt="demo: healthy run, silent redesign, breakage detected, selectors repaired and verified" width="680">
+</div>
+
+On a cadence it becomes a watchdog — cycle after cycle, a red run repairs itself or alerts:
+
+<div align="center">
+  <img src="docs/watchdog.gif" alt="watchdog: OK → OK → RED → REPAIRED → OK, cycle after cycle" width="680">
+</div>
 
 *(Both GIFs are generated, not recorded — `npm run make:gifs` re-renders them from the same
 transcripts whenever the story changes. No OBS, no ffmpeg.)*
@@ -165,7 +174,7 @@ that litter GitHub would mostly not exist.
 
 <div align="center">
 
- MIT licensed · [issues & ideas welcome](https://github.com/Swastikbhat-lab/scrape-heal/issues)
+MIT licensed · [issues & ideas welcome](https://github.com/Swastikbhat-lab/scrape-heal/issues)
 
 ⭐ Star it if your cron job has ever silently returned nothing.
 
