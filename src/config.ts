@@ -122,8 +122,8 @@ export const TEMPLATE = `{
   "_validator": "Optional: path to a JS file exporting a function (items, {config, baseline}) => {ok, itemCount, issues} that replaces the built-in shape checks.",
   "validator": null,
 
-  "_alerts": "Optional: notify humans the day a cycle breaks. Incoming-webhook URLs — Slack, Discord, or any generic JSON webhook.",
-  "alerts": { "slack": null, "discord": null, "webhook": null },
+  "_alerts": "Optional: notify humans the day a cycle breaks. Incoming-webhook URLs — Slack, Discord, or any generic JSON webhook. cooldownMinutes throttles to one alert per target per N minutes (default 60); 0 = alert every red cycle.",
+  "alerts": { "slack": null, "discord": null, "webhook": null, "cooldownMinutes": 60 },
 
   "_targets": "Optional: watch a fleet. Each entry is its own target; the top-level keys above are its defaults. Each target gets its own selectors, cadence, llm, validator, and state file. Delete the single-target keys above when using targets.",
   "targets": [

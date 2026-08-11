@@ -15,6 +15,10 @@ export interface AlertChannel {
   discord?: string;
   /** Generic webhook — receives the message object as JSON. */
   webhook?: string;
+  /** Per-target cooldown: at most one alert per this many minutes, so a
+   *  target that stays broken doesn't ping the channel every cycle.
+   *  Default 60; 0 disables throttling (alert every red cycle). */
+  cooldownMinutes?: number;
 }
 
 export interface AlertMessage {

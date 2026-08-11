@@ -32,6 +32,9 @@ export interface WatchState {
   lastCheckedAt: string;
   healedAt?: string;
   alertCount: number;
+  /** When the last alert was actually sent for this target — the throttle
+   *  that stops a long-broken target from pinging the channel every cycle. */
+  lastAlertAt?: string;
 }
 
 export interface WatchOptions {
@@ -101,17 +104,46 @@ function runAlertHook(command: string | undefined, summary: string): void {
   child.on('error', (err) => console.error(`  alert hook failed: ${err.message}`));
 }
 
-/** The shell hook (exit-code world) plus the webhook channels (human world). */
+const DEFAULT_ALERT_COOLDOWN_MINUTES = 60;
+
+/**
+ * True when a target's last alert is inside its cooldown window — the
+ * throttle that makes "alerts at most once per N minutes" true instead of
+ * "every red cycle". A cooldown of 0 (or no prior alert) never throttles.
+ * Exported for tests.
+ */
+export function alertThrottled(
+  lastAlertAt: string | undefined,
+  cooldownMinutes: number,
+  now: string,
+): boolean {
+  if (cooldownMinutes <= 0 || !lastAlertAt) return false;
+  const waitedMs = Date.parse(now) - Date.parse(lastAlertAt);
+  return Number.isFinite(waitedMs) && waitedMs < cooldownMinutes * 60_000;
+}
+
+/** The shell hook (exit-code world) plus the webhook channels (human world),
+ *  throttled per target: the gate is passed at most once per cooldown, and
+ *  the last-sent timestamp is persisted in state so the cooldown survives
+ *  restarts (callers save state right after). */
 async function runAlerts(
   opts: { onAlert?: string; alerts?: AlertChannel; log: (line: string) => void },
+  state: WatchState,
   summary: string,
   cycle: number,
   target: string,
 ): Promise<void> {
+  const cooldown = opts.alerts?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
+  const now = new Date().toISOString();
+  if (alertThrottled(state.lastAlertAt, cooldown, now)) {
+    opts.log(`  alert throttled — already alerted for this target within the last ${cooldown} min; next alert once the cooldown clears`);
+    return;
+  }
+  state.lastAlertAt = now;
   runAlertHook(opts.onAlert, summary);
   if (!opts.alerts) return;
   try {
-    await sendAlert(opts.alerts, { target, cycle, summary, at: new Date().toISOString() });
+    await sendAlert(opts.alerts, { target, cycle, summary, at: now });
     opts.log(`  alert sent → ${Object.keys(opts.alerts).join(', ')}`);
   } catch (err) {
     opts.log(`  alert delivery failed — ${(err as Error).message}`);
@@ -209,6 +241,7 @@ export async function runWatchdog(
     state.llmMemory = {};
     state.alertCount = 0;
     state.lastStatus = 'healthy';
+    state.lastAlertAt = undefined; // a new job starts with a clean throttle
   }
 
   let config = state.config;
@@ -234,7 +267,7 @@ export async function runWatchdog(
       opts.log('  This is a scraper failure, not a site change — check the scraper itself.');
       opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       opts.log('');
-      await runAlerts(opts, `cycle ${cycle}: scraper source failed to produce rows`, cycle, config.url || '(rows source)');
+      await runAlerts(opts, state, `cycle ${cycle}: scraper source failed to produce rows`, cycle, config.url || '(rows source)');
       saveState(opts.statePath, state);
       if (opts.cycles !== undefined && cycle >= opts.cycles) break;
       await sleep(opts.intervalSeconds * 1000);
@@ -269,7 +302,7 @@ export async function runWatchdog(
         opts.log('  Add --url <target> to enable self-healing; until then, detection only.');
         opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         opts.log('');
-        await runAlerts(opts, `cycle ${cycle}: ${v.issues.join('; ')}`, cycle, config.url || '(rows source)');
+        await runAlerts(opts, state, `cycle ${cycle}: ${v.issues.join('; ')}`, cycle, config.url || '(rows source)');
         saveState(opts.statePath, state);
         if (opts.cycles !== undefined && cycle >= opts.cycles) break;
         await sleep(opts.intervalSeconds * 1000);
@@ -337,7 +370,7 @@ export async function runWatchdog(
           opts.log('  Nothing was modified. The data is still broken and someone should look.');
           opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
           opts.log('');
-          await runAlerts(opts, summary, cycle, config.url);
+          await runAlerts(opts, state, summary, cycle, config.url);
         }
       }
     }

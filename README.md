@@ -155,6 +155,10 @@ red and can't be repaired — Slack or Discord incoming-webhook URLs, or any gen
 
 Per-target in a fleet config. Delivery is best-effort — a dead webhook is logged, never fatal.
 
+A target that stays broken doesn't ping the channel every cycle — `alerts.cooldownMinutes`
+(default 60) throttles to **one alert per target per window**, and the last-alert time is
+persisted in state so the cooldown survives restarts. Set it to `0` to alert every red cycle.
+
 **Flip-flopping sites cost nothing after the first heal.** Every proven config — the original one
 and every verified repair — goes into a mini-ledger (persisted in state). When a cycle goes red,
 the loop first tries the remembered configs against the live page; the moment one re-extracts the
@@ -267,14 +271,11 @@ Small by design — one machine, several targets, one loop. Shipped so far: the 
 verify loop, watchdog mode, the any-scraper row contract, the selector ledger for flip-flopping
 sites, LLM-assisted repair for when even the values change (with a repair budget that learns
 from its own misses), pluggable validators, multi-target watch from one config file, human
-alerting to Slack/Discord/webhook, and learned-rule visibility (`scrape-heal --memory <site>`)
-— all covered by the test suite, all green in CI. What this is *not*: a fleet manager, an
-anti-bot tool, or a multi-node production deployment. It is the 99% case, done well. The
-interesting next steps:
+alerting to Slack/Discord/webhook (throttled to one alert per target per N minutes), and
+learned-rule visibility (`scrape-heal --memory <site>`) — all covered by the test suite, all
+green in CI. What this is *not*: a fleet manager, an anti-bot tool, or a multi-node production
+deployment. It is the 99% case, done well. The interesting next steps:
 
-- **Alert throttling** — a target that stays broken would ping the channel every cycle; a
-  cooldown (one alert per target per N minutes) is the difference between a channel people
-  read and one they mute.
 - **A live dashboard** — the loop writes everything to state files; a small SSE server over them
   would show N targets' last cycle, heal history, and learned rules at a glance.
 - **The anti-detection arms race** is real and this isn't that. This is about the 99% case: markup
