@@ -109,7 +109,19 @@ Track who replied and what they asked in `marketing/outreach-tracker.md`
 > If you already have validation that works, I'd love to see how you handle the
 > post-breakage step — that's the part I built this for.
 
-## 10. "How is this different from Goldseam?"
+## 10. "Day-one project — why should anyone care? / how's traction?"
+
+> Fair, and the honest answer is: zero users so far, and I'd rather be upfront
+> about that than pretend otherwise. The signals that exist are (1) two curated
+> web-scraping lists took the submission as open PRs — small but real
+> validation from people who curate this space, and (2) the motivation is
+> everywhere: the "Weekly update failed" issues that litter scraper repos are
+> this exact bug.
+>
+> What I'd rather earn is a try: three commands, two minutes. Break it yourself
+> — point it at any site, redesign the markup, watch it refuse to ship garbage.
+
+## 11. "How is this different from Goldseam?"
 
 > Same problem, different target — and both of us landed on verification, just
 > against different ground truth. Goldseam heals *Cypress test selectors*: a

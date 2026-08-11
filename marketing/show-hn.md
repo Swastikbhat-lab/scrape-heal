@@ -6,7 +6,7 @@
 2. **Title:** `Show HN: scrape-heal – a scraper that fixes its own broken selectors`
 3. **URL:** `https://github.com/Swastikbhat-lab/scrape-heal`
 4. Submit, then immediately add the body text below as the **first comment** on
-   your own post (that's how the story and the two questions ship).
+   your own post (that's how the GIF, the story, and the questions ship).
 5. Post on a **weekday morning (US)** and stay in the thread for the first 2–3
    hours — reply fast, the comment section is the product.
 
@@ -21,7 +21,7 @@ posting.
 > **The GIF is the centerpiece — it goes at the very top of the first comment.**
 > HN doesn't embed images inline, so use the markdown-image link below: it
 > renders as a clickable "demo" that opens the GIF page (GitHub auto-plays it),
-> and the repo link at the bottom makes the same GIF the first thing readers
+> and the repo link further down makes the same GIF the first thing readers
 > see when they click through.
 
 See it happen (24 seconds, no sound):
@@ -43,17 +43,12 @@ the demo is the whole pitch:
 ```
 STEP 1 — the site is healthy, the scraper works
   ✓ extracted 4 item(s) — schema OK
-      1. Wireless Mouse  |  $24.99
-      2. Mechanical Keyboard  |  $89.00
-      ...
 
 STEP 2 — the site redeploys overnight. Nobody tells the scraper.
   ✗ extracted 0 item(s) — BROKEN
-    - expected at least 4 item(s), got 0
 
 STEP 3 — the healer wakes up. It knows what the data used to look like.
   heal: item container candidate ".item" — 4 match(es) on the page
-  heal: field "name" — candidate "h2.title" (4 match(es))
   heal: verifying on the live page…
   heal: PASS — 4 item(s), every known value present. Shipping the repair.
 
@@ -64,6 +59,17 @@ STEP 4 — repaired, and only because verification passed
 The part I'm most proud of: it refuses to ship anything it can't verify. The repair
 only lands if re-extracting from the live page yields the same items as the last good
 run. A healer that doesn't verify is just a more confident way to break your data.
+
+Since then it's grown into a **watchdog**: run it on a cadence and a red run either
+repairs itself or alerts (exit code 1, so cron fails before your spreadsheet does).
+And every proven selector goes into a **ledger** — a site that flip-flops between
+markup versions (A/B rollouts, rollbacks) is healed once and remembered forever
+after: `LEDGER HIT`, no re-healing.
+
+Day-one project, but already knocking on the canonical doors — open PRs against two
+curated web-scraping lists:
+https://github.com/Germey/AwesomeWebScraping/pull/17 ·
+https://github.com/h4ckf0r0day/awesome-ai-web-scraping/pull/19
 
 https://github.com/Swastikbhat-lab/scrape-heal
 
