@@ -71,6 +71,7 @@ scripts/         GIF generators — re-run npm run make:gifs if a demo's story c
    ```bash
    npm run typecheck
    npm test
+   npm run benchmark     # the repair corpus — never let a change slip the rate
    npm run demo          # the story still reads correctly
    ```
 
