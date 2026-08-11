@@ -40,8 +40,34 @@ Three moving parts, each boring on purpose:
    that still contain those exact values and derives new selectors from them. No guessing, no regex
    archaeology: it knows the products are called *"Wireless Mouse"* and *"$24.99"*, so it finds them.
 3. **Verify — the load-bearing step** — the candidate config is re-run against the live page, and the
-   repair ships only if the schema validates **and** every known item is still there. A healer that
-   doesn't verify is just a more confident way to break your data.
+   repair ships only if the schema validates, every known item is still there, **and the values still
+   look like the same kind of data** (a `price` field that suddenly yields prose is a wrong binding,
+   not a repair). A healer that doesn't verify is just a more confident way to break your data.
+
+## What's in the box
+
+| Capability | What it does | Where |
+|---|---|---|
+| **The loop** | detect → heal → verify → settle, on a cadence | watchdog |
+| **Any scraper** | watch JSON / JSONL / CSV rows from a command or file | `rowsFrom` / `rowsFile` |
+| **LLM repair** | when even the values changed — model proposes, browser verifies | `llm` |
+| **Value-type verification** | a repair whose values stop looking like themselves is refused (a `price` field yielding prose never ships) | `fieldTypes` / `verifyValueTypes` |
+| **Selector ledger** | flip-flopping sites heal once, then answer from memory (`LEDGER HIT`) | state |
+| **Pluggable validators** | your schema replaces the built-in shape checks | `validator` |
+| **Fleet** | one config file, many targets, each its own watchdog | `targets` |
+| **Alerting** | Slack / Discord / webhook, throttled per target | `alerts` |
+| **Dashboard** | zero-dependency live board over the state files | `--dashboard` |
+| **Pagination** | next-link, load-more, infinite-scroll, or `{page}` URL patterns | `pagination` |
+| **Proxy rotation** | scored pool with cooldown, backoff, and block detection | `proxy` |
+| **Auth** | pages behind a login: attach, profile, or form-fill | `auth` |
+| **Pipelines** | send healthy rows downstream: webhook, file, Postgres, MySQL | `pipelines` |
+| **Plugins** | extend the loop: extractors, site-specific healers, transforms | `pluginsDir` |
+| **Visual extraction** | reads a redesigned grid straight off the pixels (OCR seam included) | visual |
+| **REST API** | run the loop as an HTTP service — cron-friendly, SSE events | `startApi` |
+| **Change watching** | diff every healthy cycle — price drops, restocks, new items — alert on thresholds | `watch` |
+| **Failure classification** | retry 5xx/timeouts with backoff, rotate proxies on blocks, heal only real breakage | built-in |
+| **Evidence on red** | screenshot + DOM snapshot + HTTP status per failed cycle, on the board and in alerts | built-in |
+| **Library API** | the whole loop as functions — embed it in your own scheduler | `import 'scrape-heal'` |
 
 ## See it happen
 
@@ -57,8 +83,6 @@ On a cadence it becomes a watchdog — cycle after cycle, a red run repairs itse
 <div align="center">
   <img src="docs/watchdog.gif" alt="watchdog: OK → OK → RED → REPAIRED → OK, cycle after cycle" width="680">
 </div>
-
-
 
 ## Quickstart
 
@@ -94,37 +118,38 @@ One config file, one command. Every key optional; CLI flags override the file wh
   "identityField": "name",                 // identifies one item uniquely
   "minItems": 4,                           // below this = broken
   "intervalSeconds": 300,                  // watchdog cadence
+
   "rowsFrom": null,                        // or: run any scraper, read JSON/CSV rows
+  "rowsFile": null,                        // or: watch a file your scraper already writes
   "writeConfig": "scraper.config.json",    // repaired selectors, written back here
   "onAlert": null,                         // command run on an unhealable red cycle
   "statePath": ".scrape-heal/state.json",
-  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null, "maxAttempts": 3 },  // or env SCRAPE_HEAL_LLM_*
+
+  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null, "maxAttempts": 3 },
   "validator": null,                       // path to a JS file exporting your schema check
-  "alerts": null,                          // or: {"slack": "…", "discord": "…", "webhook": "…"}
-  "dashboard": null,                       // or: {"port": 4321, "stateDir": ".scrape-heal"}
+  "alerts": { "slack": null, "discord": null, "webhook": null, "cooldownMinutes": 60 },
+  "dashboard": { "port": 4321, "stateDir": ".scrape-heal" },
+
+  // ---- v2 ----
+  "pagination": { "kind": "next-link", "selector": ".pagination .next", "maxPages": 20 },
+  "proxy": { "proxies": null, "providerUrl": null, "cooldownBaseSeconds": 30 },
+  "pipelines": [ { "kind": "file", "path": "./data/products.jsonl" } ],
+  "auth": { "kind": "attach", "cdp": "http://127.0.0.1:9222" },
+  "pluginsDir": "./scrape-heal-plugins",
+
+  // ---- v3 ----
+  "watch": {
+    "enabled": true,
+    "thresholds": [
+      { "field": "price", "dropPercent": 5 },
+      { "field": "stock", "changedTo": "in stock" }
+    ]
+  },
+  "alerts": { "onChange": true, "changeCooldownMinutes": 60 },
+
   "targets": null                          // or: a fleet — see "Watch a fleet" below
 }
 ```
-
-## Any scraper, not just Playwright
-
-The loop's contract with your scraper is one sentence: **give me the rows.** JSON, JSON Lines, or
-CSV — on stdout or in a file. The scraper that produces them is irrelevant; Playwright is just the
-built-in source.
-
-```bash
-npm run demo:any     # a deliberately dumb fetch+regex scraper, healed the same way
-```
-
-- `--rows-from "<cmd>"` — run the command each cycle, parse stdout (Scrapy, Puppeteer, bs4, anything).
-- `--rows-file <path>` — watch a file your existing scraper already writes (a cron dump, a CSV).
-- `--url` is only needed for **self-healing** (the browser re-measures the page). Without it the loop
-  is a plain detector: it validates and alerts, and refuses to guess at repairs.
-- A scraper that **crashes** (non-zero exit, no parseable output) is reported as a scraper failure,
-  not a site change — the loop never "heals" a scraper that merely errored.
-
-Copy-paste recipes for **Scrapy**, **Puppeteer**, and a **legacy cron dump** →
-**[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)**.
 
 ## Watchdog mode
 
@@ -146,29 +171,25 @@ moment a cycle goes red (webhook, desktop notification); the one-line summary ar
 `SCRAPE_HEAL_ALERT` env var. State persists in `.scrape-heal/state.json`, so a restart resumes the
 healed config — no re-detecting, no re-healing.
 
-**Alert the humans, not just the scheduler.** `alerts` posts to real channels the day a run goes
-red and can't be repaired — Slack or Discord incoming-webhook URLs, or any generic JSON webhook
-(which receives the raw message and can feed anything else):
+## Any scraper, not just Playwright
 
-```jsonc
-"alerts": { "slack": "https://hooks.slack.com/…", "discord": "…", "webhook": "https://…" }
-```
-
-Per-target in a fleet config. Delivery is best-effort — a dead webhook is logged, never fatal.
-
-A target that stays broken doesn't ping the channel every cycle — `alerts.cooldownMinutes`
-(default 60) throttles to **one alert per target per window**, and the last-alert time is
-persisted in state so the cooldown survives restarts. Set it to `0` to alert every red cycle.
-
-**Flip-flopping sites cost nothing after the first heal.** Every proven config — the original one
-and every verified repair — goes into a mini-ledger (persisted in state). When a cycle goes red,
-the loop first tries the remembered configs against the live page; the moment one re-extracts the
-same data, it's shipped as a `LEDGER HIT` without re-healing. A site that toggles between markup
-versions (A/B rollouts, cached deploys, rollbacks) is healed once and remembered forever after:
+The loop's contract with your scraper is one sentence: **give me the rows.** JSON, JSON Lines, or
+CSV — on stdout or in a file. The scraper that produces them is irrelevant; Playwright is just the
+built-in source.
 
 ```bash
-npm run watch -- --demo --mutate-flip 12 --interval 5 --cycles 14   # flip-flop demo
+npm run demo:any     # a deliberately dumb fetch+regex scraper, healed the same way
 ```
+
+- `--rows-from "<cmd>"` — run the command each cycle, parse stdout (Scrapy, Puppeteer, bs4, anything).
+- `--rows-file <path>` — watch a file your existing scraper already writes (a cron dump, a CSV).
+- `--url` is only needed for **self-healing** (the browser re-measures the page). Without it the loop
+  is a plain detector: it validates and alerts, and refuses to guess at repairs.
+- A scraper that **crashes** (non-zero exit, no parseable output) is reported as a scraper failure,
+  not a site change — the loop never "heals" a scraper that merely errored.
+
+Copy-paste recipes for **Scrapy**, **Puppeteer**, and a **legacy cron dump** →
+**[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)**.
 
 ## When even the data changes (LLM repair)
 
@@ -191,9 +212,12 @@ SCRAPE_HEAL_LLM_BASE_URL=https://api.openai.com/v1   # OpenRouter, Groq, Ollama,
 The model only **proposes**. The candidate config is still re-run against the live page, and a
 proposal that doesn't extract the right shape is refused with the same loud alert as any other
 failed repair — a bad model guess is exactly as safe as a bad text guess. When the old values are
-gone for real (the data changed), the gate verifies shape honestly — right count, no empty fields
-— and says so in the log instead of pretending it verified the data. Propose with the model,
-**verify with the browser** — the split stays intact.
+gone for real (the data changed), the gate verifies shape **and value types** honestly — right
+count, no empty fields, values still look like themselves — and says so in the log instead of
+pretending it verified the data. A model that binds `price` to a `.badge` that says "On sale"
+passes the shape check (it has text!) and is caught by the type check instead, then told exactly
+that before it retries. Propose with the model, **verify with the browser** — the split stays
+intact.
 
 **It learns from its misses.** A failed proposal — the verification issues plus the real
 selector-hit counts from the live page — is fed back and the model tries again, up to
@@ -204,6 +228,35 @@ so it doesn't repeat them.
 
 **See what it has learned.** `scrape-heal --memory <site>` prints the verified repairs and failed
 proposals the loop remembers for that site; `scrape-heal --memory` lists every site it remembers.
+
+## The gate refuses wrong bindings (value-type verification)
+
+Shape checks prove a repair extracted *something*; the identity check proves it found the *same
+rows*. Neither can tell a correct binding from a wrong one — after a redesign, a `price` selector
+that lands on *any* element with text ("Price on request") is non-empty, identities check out, and
+without a third check the repair ships silently corrupted data.
+
+So every repair — text pass and LLM pass alike — is also checked against **how the data looked in
+the last good run**. Each field's values get a type profile (price, percentage, date, URL, image,
+number, code/SKU, or plain text) with a consistency score. A repaired extraction must still look
+like that kind of data; when it doesn't, the repair is refused and the loop keeps trying:
+
+```
+heal: FAIL — field "price" values no longer look like a price (was 100% a price, now 0%) —
+the selector may bind the wrong element; refusing the repair. Nothing shipped.
+```
+
+The taxonomy is deliberately conservative and built for real redesigns: a dropped `$` sign still
+passes (price ↔ number), a word field may flip between "in stock" and "Available", and a code
+field must not start yielding prose. When a site genuinely changes a field's format, tell the
+loop and it stops demanding the old shape:
+
+```jsonc
+"fieldTypes": { "price": "price", "stock": "text" },  // override a field's kind
+"verifyValueTypes": false                              // or disable the check entirely
+```
+
+(Skipped automatically when a pluggable `validator` is set — your schema decides.)
 
 ## Your schema, your rules (pluggable validators)
 
@@ -228,11 +281,277 @@ export default (items, { config, baseline }) => ({
 It replaces the built-in shape checks *everywhere* — healthy runs, ledger hits, and the repair
 verify gate — so your schema is what "good" means, not a second opinion.
 
+## What broke: transient, blocked, or breakage? (v3)
+
+A red run is not one thing, and treating it as one thing is how scrapers heal
+pages that never actually broke. Every fetch is classified before the loop
+decides anything:
+
+| Signal | What it means | What the loop does |
+|---|---|---|
+| **Transient** — 5xx, timeout, connection reset, DNS error | the site was temporarily unreachable | retry with exponential backoff, up to 3 attempts; if it persists, alert — **never heal** |
+| **Block** — 403, 429, a captcha/Cloudflare wall (even one answering 200) | the site refused us | rotate to the next proxy from the pool (when configured) and retry; without a pool, alert and point at `proxy` — **never heal** |
+| **Loaded, wrong shape** — page fine, selectors match nothing | a real redesign | the healer — the only case that repairs |
+| **Source crashed** — command exited non-zero, no parseable rows | your scraper broke, not the site | red + alert — **never heal** |
+
+A navigation timeout used to throw straight out of the loop; a single 503 used
+to be indistinguishable from a redesign. Now the loop says which it was, in
+its own words:
+
+```
+  transient fetch failure (HTTP 503) — attempt 1/3, retrying…
+  proxy http://user:pass@host:8080 blocked — cooling it down and rotating
+```
+
+There is nothing to configure — retries and classification are always on.
+`maxFetchAttempts` (default 3) is exposed on the library for tuning.
+
+## Evidence on red (v3)
+
+A red alert used to be a one-line summary and a guess. Now every red cycle
+keeps receipts — the screenshot, the DOM snapshot, and the HTTP status (when
+there was one) — written under `<stateDir>/evidence/<target>/`, kept 5 per
+target, and attached to the alert:
+
+```
+  evidence → evidence/shop-a/2026-08-11T21-13-48-153Z-000_screenshot.png
+```
+
+- **Alerts** — the generic webhook receives the whole evidence record
+  (`evidence: { reason, status, screenshot, dom, at }`); Slack/Discord get a
+  text line (`evidence → HTTP 403 · screenshot: … · dom: …`); the `onAlert`
+  shell hook gets it in `SCRAPE_HEAL_EVIDENCE` as JSON.
+- **Dashboard** — each card shows the last red cycle's screenshot inline
+  (served by the dashboard itself at `/evidence/…`), the reason, the status,
+  and a link to the DOM snapshot. "Why is it red" has an answer that doesn't
+  require trusting the log.
+- **The API server** includes the evidence record in every `/run` result.
+
+Capture is strictly best-effort — a failed screenshot never takes the loop
+down, and a crashed rows-source (no page to look at) still gets a reason-only
+record so the alert shape never changes.
+
+## Pages that paginate (v2)
+
+Most sites spread their data across pages, and page 1 is a fraction of the catalog. Configure a
+strategy and the loop walks every page before validating — so the baseline, the heal, and the
+verify all see the *whole* data set, not a slice:
+
+```jsonc
+{
+  "pagination": { "kind": "next-link", "selector": ".pagination .next" }
+  // kinds: "next-link" | "load-more" | "infinite-scroll" | "url-pattern"
+  //        "url-pattern": { "kind": "url-pattern", "pattern": "/products?page={page}" }
+  // caps:  "maxPages": 20, "maxItems": 500, "pageWaitMs": 1000
+  //        "dedupeField": "name"   // dedupe across pages (default: identityField)
+}
+```
+
+```bash
+npm run watch -- --pagination next-link --pagination-selector ".pagination .next" --pagination-max 20
+```
+
+Traversal stops on safety caps, a dead next link, or a page of pure duplicates; `maxItems` keeps
+a runaway catalog from ever running forever. The library also ships `detectPagination(page)` —
+a best-effort auto-detector of the four strategies — for wiring your own bootstrap.
+
+## Anti-bot rotation (v2)
+
+When a site blocks you, one IP is the end of the story. A configured proxy pool is scored on
+every use — successful proxies build a latency average, and a proxy that returns a block signal
+(HTTP 403/429, a Cloudflare challenge, a captcha page) is cooled down with exponential backoff
+and skipped until it recovers (a 5xx is the *site's* fault and never penalizes the proxy). Dead
+proxies are removed, cooled proxies return, and the pool self-heals:
+
+```jsonc
+{
+  "proxy": {
+    "proxies": ["http://user:pass@host1:8080", "http://user:pass@host2:8080"],
+    "providerUrl": "https://my-provider.example/proxies",   // JSON array of proxy URLs
+    "providerRefreshSeconds": 120,                          // re-fetch the pool on a cadence
+    "cooldownBaseSeconds": 30,                              // doubles per consecutive failure
+    "cooldownMaxSeconds": 300
+  }
+}
+```
+
+```bash
+npm run watch -- --proxy "http://p1:8080,http://p2:8080" --proxy-provider "https://my-provider.example/proxies"
+```
+
+Block detection is signature-based: status codes plus page-content markers
+(`cf-browser-verification`, *"Just a moment"*, *"DDoS protection"*, `captcha`, `Access Denied` …).
+The pool is wired into the loop: every fetch runs through the current proxy, a blocked proxy
+is cooled down and rotated, and a 5xx from the site never unfairly penalizes a healthy proxy
+(it's the site's fault, not the proxy's). The pool is also a full class (`ProxyPool`) with
+`next()` / `record()` / `isBlocked()` exposed on the library, for your own integrations.
+
+## Pages behind a login (v2)
+
+Most valuable data is behind a login wall. Three modes, and credentials never touch the config
+file:
+
+```jsonc
+{ "auth": { "kind": "attach", "cdp": "http://127.0.0.1:9222" } }
+//   1. attach — drive a browser you already signed into (CDP); your session is used as-is
+{ "auth": { "kind": "profile", "dir": "./browser-profile" } }
+//   2. profile — a persistent browser context: sign in once, cookies survive restarts
+{ "auth": {
+    "kind": "login", "loginUrl": "https://app.example.com/login",
+    "userSelector": "#email", "passSelector": "#password", "submitSelector": "button[type=submit]",
+    "rememberSelector": "#remember", "settleMs": 3000,
+    "successSelector": ".avatar", "sessionPath": ".scrape-heal/session.json" } }
+//   3. login — fill the form programmatically, save the session, skip login next time
+```
+
+```bash
+SCRAPE_HEAL_AUTH_USER=you@example.com SCRAPE_HEAL_AUTH_PASS='...' npm run watch
+# or with flags: --auth login --auth-login-url ... --auth-user-selector ... --auth-session .scrape-heal/session.json
+```
+
+The login flow reads credentials only from `SCRAPE_HEAL_AUTH_USER` / `SCRAPE_HEAL_AUTH_PASS` —
+they're never stored, written, or logged. A saved session is validated on load (a dead session
+silently re-logs-in), and `attach` never closes the browser you're using. The module is
+`authenticate(browser, config)` on the library — the loop wiring to hold a session open across
+cycles is the integration step on deck.
+
+## Where the data goes (v2 pipelines)
+
+A scraper that only logs to console is a toy. Pipelines deliver healthy rows downstream after
+every verified cycle — and a dead downstream can never take the scraper down with it (failures
+are logged, never fatal):
+
+```jsonc
+{
+  "pipelines": [
+    { "kind": "webhook", "url": "https://my-api.example.com/ingest", "secret": "hmac-secret" },
+    { "kind": "webhook-batch", "url": "https://my-api.example.com/ingest", "headers": { "x-team": "data" } },
+    { "kind": "file", "path": "./data/products.jsonl" },   // .jsonl appends; .json overwrites
+    { "kind": "postgres", "connection": "postgres://…", "table": "products", "conflictColumn": "name" },
+    { "kind": "mysql", "connection": "mysql://…", "table": "products", "batchSize": 100 }
+  ]
+}
+```
+
+- **webhook** posts one request per row; **webhook-batch** posts the array once. With a `secret`,
+  every payload carries an HMAC-SHA256 signature in the `x-scrape-heal-signature` header.
+- **file** appends JSON Lines (`.jsonl`/`.ndjson`) or rewrites pretty JSON.
+- **postgres / mysql** upsert into a table via `registerDbRunner()` — the DB driver is injected
+  rather than hard-depended on, so you supply the `pg` / `mysql2`-backed function:
+
+```js
+import { registerDbRunner } from 'scrape-heal';
+import pg from 'pg';
+
+registerDbRunner(async (pipeline, rows) => {
+  const client = new pg.Client({ connectionString: pipeline.connection });
+  await client.connect();
+  // ... upsert `rows` into pipeline.table, conflict on pipeline.conflictColumn ...
+  await client.end();
+});
+```
+
+The library also exports `retry(fn, { maxAttempts, baseDelayMs, maxDelayMs, jitter })` —
+exponential backoff with jitter for flaky HTTP paths.
+
+## Extend the loop (v2 plugins)
+
+Plugins open the loop at three points without touching its code. Each file in `pluginsDir`
+(default-exports a plugin object, or a function that returns one):
+
+```jsonc
+{ "pluginsDir": "./scrape-heal-plugins" }
+```
+
+```js
+// scrape-heal-plugins/normalize.mjs
+export default {
+  name: 'normalize-currencies',
+  kind: 'transform',                                // runs after extraction, every cycle
+  match: (url) => url.includes('shop.'),
+  transform: (rows) => rows.map((r) => ({
+    ...r,
+    price: r.price?.replace(/[^0-9.]/g, ''),
+  })),
+};
+```
+
+Three kinds, tried in registration order with the built-in logic as fallback:
+
+| Kind | Hook | Example use |
+|---|---|---|
+| `extractor` | replace *how* rows are produced | GraphQL introspection, RSS parsing, a CSV download |
+| `healer` | site-specific repair logic | "this site always renames classes with a `v2-` prefix" |
+| `transform` | post-process extracted rows | clean whitespace, parse dates, normalize currencies |
+
+```js
+// programmatic — register at startup, load from a directory, or both
+import { registerPlugin, loadPlugins } from 'scrape-heal';
+registerPlugin({ name: 'my-healer', kind: 'healer',
+  match: (url) => url.includes('example.com'),
+  heal: async (page, config, baseline) => { /* ... return { config, verified } or null */ } });
+await loadPlugins('./my-plugins/');
+```
+
+**Transform plugins are wired into the loop.** Extractor and healer plugins are ready on the
+library (`tryExtractors` / `tryHealers`) — hooking them ahead of the built-in extractor/healer in
+the watchdog is the integration step on deck.
+
+## When even the DOM is a blank (v2 visual extraction)
+
+A redesign can obliterate every class name *and* change the values. The last resort is to look at
+what the page actually renders. When DOM extraction returns zero items, the loop runs **layout
+analysis in the browser** — it finds the repeating grid of same-height, same-edge rows, maps each
+cell back to a DOM element by hit-testing, and reconstructs the rows. Free, immediate, no external
+service:
+
+```bash
+npm run watch -- --demo --mutate-values 8 --interval 5 --cycles 8
+# the DOM dies; the loop reads the grid off the pixels and keeps the data flowing
+```
+
+For the truly hostile case — canvas/WebGL/WASM-rendered pages where *nothing* is in the DOM — an
+**OCR seam** is built in: `setOcrEngine(engine)` takes a screenshot → text function (Tesseract
+WASM, Google Vision, AWS Textract — any engine), and `ocrPage(page)` returns the page text from
+pixels. `detectGrid` / `extractByGrid` / `ocrPage` / `setOcrEngine` are all exported.
+
+## Run it as a service (v2 REST API)
+
+Instead of the watchdog owning the process, expose the loop as HTTP endpoints — a scheduler
+(cron, a cloud function, a manual `curl`) triggers a cycle and reads the result. State lives in
+the same per-target files the dashboard reads, so the server and a dashboard can run side by side:
+
+```js
+// api.ts — from a clone, import the source; from the package, use 'scrape-heal'
+import { startApi } from './src/api.ts';
+await startApi({ stateDir: '.scrape-heal', port: 4200, log: console.log });
+```
+
+```bash
+npx tsx api.ts
+curl http://localhost:4200/targets            # list targets + last status
+curl -X POST http://localhost:4200/run        # one cycle on every target
+curl -X POST http://localhost:4200/run/example.com   # one cycle on one target
+```
+
+| Endpoint | What it gives you |
+|---|---|
+| `GET /health` | liveness check |
+| `GET /targets` | configured targets and their last status |
+| `GET /targets/:id` | one target's full state |
+| `POST /run` | run one cycle on every target, return results |
+| `POST /run/:id` | run one cycle on one target |
+| `GET /state` | full state dump, for scripts |
+| `GET /events` | SSE stream of cycle results — real-time board feed |
+
+A shared browser is launched once and reused across cycles.
+
 ## Watch a fleet (multiple targets)
 
 One config file, many sites — the top-level keys are the defaults, `targets` overrides per site.
 Each target runs its own concurrent watchdog with its own selectors, cadence, repair budget,
-validator, and state file:
+validator, and state file — and every v2 feature is per-target too (pagination, pipelines, proxy,
+LLM memory):
 
 ```jsonc
 {
@@ -242,13 +561,15 @@ validator, and state file:
     {
       "url": "https://shop-a.example.com/products",
       "fields": { "name": ".name", "price": ".price" },
-      "llm": { "maxAttempts": 5 }         // this site gets a bigger repair budget
+      "llm": { "maxAttempts": 5 },              // this site gets a bigger repair budget
+      "pagination": { "kind": "next-link", "selector": ".pagination .next" }
     },
     {
       "url": "https://shop-b.example.com/items",
-      "validator": "validator-b.js",       // its own schema
+      "validator": "validator-b.js",            // its own schema
       "alerts": { "slack": "https://hooks.slack.com/…" },   // its own channel
-      "intervalSeconds": 600                // its own cadence
+      "intervalSeconds": 600,                   // its own cadence
+      "pipelines": [ { "kind": "file", "path": "./data/shop-b.jsonl" } ]
     }
   ]
 }
@@ -257,6 +578,81 @@ validator, and state file:
 `scrape-heal` runs one watchdog per target — a red run on any of them repairs or alerts
 independently, and the exit code is 1 if *any* target ended red. State lives per target
 (`.scrape-heal/<host:port>.json`), so healed configs and per-site LLM memory never cross wires.
+
+## Alert the humans, not just the scheduler
+
+`alerts` posts to real channels the day a run goes red and can't be repaired — Slack or Discord
+incoming-webhook URLs, or any generic JSON webhook (which receives the raw message and can feed
+anything else):
+
+```jsonc
+"alerts": { "slack": "https://hooks.slack.com/…", "discord": "…", "webhook": "https://…" }
+```
+
+Per-target in a fleet config. Delivery is best-effort — a dead webhook is logged, never fatal.
+
+A target that stays broken doesn't ping the channel every cycle — `alerts.cooldownMinutes`
+(default 60) throttles to **one alert per target per window**, and the last-alert time is
+persisted in state so the cooldown survives restarts. Set it to `0` to alert every red cycle.
+
+**Flip-flopping sites cost nothing after the first heal.** Every proven config — the original one
+and every verified repair — goes into a mini-ledger (persisted in state). When a cycle goes red,
+the loop first tries the remembered configs against the live page; the moment one re-extracts the
+same data, it's shipped as a `LEDGER HIT` without re-healing. A site that toggles between markup
+versions (A/B rollouts, cached deploys, rollbacks) is healed once and remembered forever after:
+
+```bash
+npm run watch -- --demo --mutate-flip 12 --interval 5 --cycles 14   # flip-flop demo
+```
+
+## The other half: change watching (v3)
+
+The loop above is a *breakage* detector — it reacts when extraction stops
+working. But the most valuable thing a scraper can notice is often that the
+data *changed while everything still worked*: a price dropped, an item went
+out of stock, a new product appeared. That's what `watch` is — a structural
+diff of every healthy cycle against the previous one, matched by identity, so
+the report says *which* product changed and *how*, not "the page is different":
+
+```bash
+npm run watch -- --demo --mutate-values 8 --interval 5 --cycles 8
+```
+
+When the data changes (same shape, new values — the healthy path), the log
+shows the diff and the report lands in the dashboard:
+
+```
+[cycle 3] OK — 6 item(s), shape matches the last good run
+  changes vs the last good run:
+  ~ Wireless Mouse · price: "$24.99" → "$19.99" (-5.00, -20%)
+  ~ Mechanical Keyboard · stock: "in stock" → "out of stock"
+```
+
+**Alert on thresholds.** Set `alerts.onChange: true` and list what's worth a
+ping — a 5% price drop, a restock, a new listing:
+
+```jsonc
+{
+  "watch": {
+    "thresholds": [
+      { "field": "price", "dropPercent": 5 },          // price dropped ≥ 5%
+      { "field": "stock", "changedTo": "in stock" },   // restocked
+      { "field": "stock", "changedFrom": "out of stock" },
+      { "field": "status", "anyChange": true },
+      { "added": true }                                  // any new item
+    ]
+  },
+  "alerts": { "onChange": true, "changeCooldownMinutes": 60 }
+}
+```
+
+`dropPercent`/`risePercent` are numeric (currency/grouping/percent noise is
+stripped: `$24.99` parses as `24.99`); `changedTo`/`changedFrom` are exact
+trimmed string matches. With no thresholds, `onChange: true` alerts on any
+change. Change alerts have their own cooldown (`changeCooldownMinutes`,
+default 60, `0` = every qualifying change), tracked separately from the
+red-cycle cooldown — so a price-drop ping never suppresses a breakage alert
+or vice versa. `--no-watch` turns the diffing off entirely.
 
 ## Watch it live (dashboard)
 
@@ -271,11 +667,46 @@ npm run watch -- --demo --mutate 6 --interval 5 --cycles 8
 ```
 
 Each target is a card — a status pill (healthy / repaired / red), items vs. the expected
-minimum, alert count, last-healed time, the proven-config ledger, and the per-site LLM memory.
-Zero dependencies, one self-contained page, and it works for a fleet: every target's state file
-appears the moment its watchdog writes. `GET /state` returns the same view as JSON for scripts;
-`--dashboard <port>` picks a port (busy ports fall back to a free one), and `stateDir` points at
-whichever directory the state files live in.
+minimum, alert count, last-healed time, the proven-config ledger, the per-site LLM memory, the
+last change-watching report, and — when a cycle went red — the captured screenshot, HTTP
+status, and DOM-snapshot link as evidence. Zero dependencies, one self-contained page, and it
+works for a fleet: every target's state file appears the moment its watchdog writes. `GET /state`
+returns the same view as JSON for scripts; `--dashboard <port>` picks a port (busy ports fall
+back to a free one), and `--state-dir`/`stateDir` points at whichever directory the state files
+live in.
+
+## The library API
+
+The whole loop is a few functions — embed it in your own scheduler, server, or scraper:
+
+```js
+import { runWatchdog, commandRows } from 'scrape-heal';
+import { chromium } from 'playwright';
+
+// watch any scraper that prints JSON/CSV, every 5 minutes, forever
+const browser = await chromium.launch();
+runWatchdog(browser, await browser.newPage(), {
+  intervalSeconds: 300,
+  statePath: '.scrape-heal/state.json',
+  fetchRows: commandRows('python my_scrapy_spider.py --json'),
+  writeConfigPath: 'scraper.config.json',
+  log: console.log,
+}, {
+  url: 'https://example.com',
+  items: '.product-card',
+  fields: [{ name: 'name', selector: '.name' }],
+  identityField: 'name',
+  minItems: 4,
+});
+```
+
+Or skip the loop and use the pieces directly: `extract` pulls rows out of a page, `validate`
+checks them against the last good run, `heal` proposes and verifies a repair. Everything —
+`runWatchdog`, `heal`, `ProxyPool`, `authenticate`, `extractAllPages`, `detectPagination`,
+`detectGrid`/`extractByGrid`/`setOcrEngine`, `runPipelines`/`registerDbRunner`/`retry`,
+`registerPlugin`/`loadPlugins`, `startApi`, `startDashboard`, `sendAlert`, `loadValidator`,
+`parseRows`, `rememberLLM`, `classifyValue`/`verifyValueTypes` — is exported from the
+package root, fully typed.
 
 ## What it refuses to do
 
@@ -284,21 +715,25 @@ whichever directory the state files live in.
 - **Invent data.** The repaired run must contain everything the last good run contained.
 - **Trust the model.** An LLM proposal is a proposal; it still has to pass the verify gate.
 - **"Heal" a crashed scraper.** A non-zero exit is a scraper bug, not a site change.
+- **Guess at repairs without a URL.** Detection-only mode validates and alerts; it never rewrites
+  selectors it can't re-measure.
+- **Heal a page that never responded.** A 503, a timeout, or a captcha wall is not a broken
+  selector — it's retried, rotated, or alerted about, never repaired.
 
 ## What's next (honestly)
 
-Small by design — one machine, several targets, one loop. Shipped so far: the detect → heal →
-verify loop, watchdog mode, the any-scraper row contract, the selector ledger for flip-flopping
-sites, LLM-assisted repair for when even the values change (with a repair budget that learns
-from its own misses), pluggable validators, multi-target watch from one config file, human
-alerting to Slack/Discord/webhook (throttled to one alert per target per N minutes),
-learned-rule visibility (`scrape-heal --memory <site>`), and a live dashboard
-(`scrape-heal --dashboard`) — all covered by the test suite, all green in CI. What this is
-*not*: a fleet manager, an anti-bot tool, or a multi-node production deployment. It is the 99%
-case, done well. The interesting next steps:
+v2 shipped the pieces; v3 added change watching and failure classification
+(transient retries, proxy rotation on blocks, heal-only-on-breakage). The
+remaining seams:
 
-- **The anti-detection arms race** is real and this isn't that. This is about the 99% case: markup
-  changed, data still there, nobody noticed.
+- **Wire auth into the watchdog** — `authenticate()` works today; the loop should hold the
+  authenticated context across cycles so logins are scraped like any other page.
+- **Hook extractor/healer plugins into the loop** — transforms run already; extractors and
+  healers should be tried before the built-ins.
+- **Auto-detect pagination** — `detectPagination()` exists; a `--pagination auto` mode would
+  adopt a detected strategy on first sight.
+- **OCR engines** — the seam is built; a bundled Tesseract-WASM fallback would make the canvas
+  case zero-setup.
 
 ## The point
 

@@ -7,9 +7,10 @@ Thanks for showing up. This is a deliberately small project — The whole loop f
 ## The two design rules
 
 1. **Never ship an unverified repair.** Every repair path — text, LLM, ledger — must
-   re-extract against the live page before it ships. A repair that skips this gate is
-   not an improvement, it's a bug. A *failed* verification must refuse loudly, exit 1,
-   and change nothing.
+   re-extract against the live page before it ships. Verification is three checks:
+   shape, known identities, and value types (a `price` field yielding prose is a wrong
+   binding — see `valuetypes.ts`). A repair that skips this gate is not an improvement,
+   it's a bug. A *failed* verification must refuse loudly, exit 1, and change nothing.
 2. **Docs are honest or absent.** When a feature ships, move it out of "What's next
    (honestly)" into the README body. Never claim production readiness, never claim
    anti-bot capabilities, never say "AI" when you mean "a model proposes, the browser
@@ -47,9 +48,10 @@ src/
   cli.ts         the CLI: flags, demo fixture server, mock LLM endpoint,
                  concurrent multi-target mode, --memory, --dashboard
   demo.ts        the 15-second story demo (npm run demo)
-  demo-any.ts    same loop with a fetch+regex scraper (npm run demo:any)
-fixture/         site-v1/v2/v3.html (the redesigns), regex-scraper.mjs, validator.js
-test/            node:test suite — validate, parse, proposals, ledger, heal e2e
+  demo-any.ts    same loop with a fetch+regex scraper (npm run demo:any)  fixture/         site-v1..v5.html (the redesigns, incl. the wrong-binding
+                   traps), regex-scraper.mjs, validator.js
+  valuetypes.ts    the value-type verify gate: classify/profile/refuse wrong bindings
+  test/            node:test suite — validate, parse, proposals, ledger, heal e2e
 docs/            INTEGRATIONS.md (Scrapy/Puppeteer/cron recipes), demo GIFs
 scripts/         GIF generators — re-run npm run make:gifs if a demo's story changes
 ```
