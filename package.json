@@ -13,7 +13,7 @@
     }
   },
   "bin": {
-    "scrape-heal": "./dist/cli.js"
+    "scrape-heal": "dist/cli.js"
   },
   "files": [
     "dist",
