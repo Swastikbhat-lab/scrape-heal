@@ -110,7 +110,7 @@ export async function runWatchdog(
   }
 
   let config = state.config;
-  const fetchRows = opts.fetchRows ?? playwrightRows(page, config);
+  const fetchRows = opts.fetchRows ?? playwrightRows(page, () => config);
 
   let exitCode = 0;
   let cycle = 0;

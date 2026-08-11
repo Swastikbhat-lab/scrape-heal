@@ -17,11 +17,14 @@ import { extract } from './scraper.js';
  */
 export type RowFetch = () => Promise<ExtractedItem[] | null>;
 
-/** The built-in source: drive the page with Playwright and the config's selectors. */
+/** The built-in source: drive the page with Playwright and the config's selectors.
+ *  Config is passed as a getter so that a repaired config takes effect on the
+ *  very next extraction — snapshotting the object here would keep the loop
+ *  re-detecting the same break forever. */
 export const playwrightRows =
-  (page: Page, config: ScraperConfig): RowFetch =>
+  (page: Page, getConfig: () => ScraperConfig): RowFetch =>
   () =>
-    extract(config, page);
+    extract(getConfig(), page);
 
 /** Run an external scraper and read its rows from stdout (JSON array or CSV). */
 export const commandRows = (cmd: string): RowFetch => async () => {
