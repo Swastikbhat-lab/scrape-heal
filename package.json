@@ -1,0 +1,22 @@
+{
+  "name": "scrape-heal",
+  "version": "0.1.0",
+  "description": "A self-healing web scraper: detects when a site's markup breaks its selectors, then repairs them with a verify-then-ship loop.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "demo": "tsx src/demo.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
