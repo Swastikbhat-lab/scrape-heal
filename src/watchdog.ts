@@ -3,14 +3,26 @@ import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Browser, Page } from 'playwright';
 import type { ScraperConfig, ExtractedItem } from './scraper.js';
-import { validate } from './scraper.js';
+import { extract, validate } from './scraper.js';
 import { heal } from './heal.js';
 import { playwrightRows, type RowFetch } from './source.js';
+
+export interface LedgerEntry {
+  /** A selector config proven against this target before. */
+  config: ScraperConfig;
+  /** When it was last proven (healthy run or verified repair). */
+  verifiedAt: string;
+  /** How many red cycles this entry has already repaired from memory. */
+  hits: number;
+}
 
 export interface WatchState {
   config: ScraperConfig;
   /** The last extraction that passed validation — the ground truth for repair. */
   baseline: ExtractedItem[];
+  /** Previously-proven configs, newest first — the memory that makes a
+   *  flip-flopping site cost nothing after the first heal. */
+  ledger: LedgerEntry[];
   lastStatus: 'healthy' | 'repaired' | 'red';
   lastCheckedAt: string;
   healedAt?: string;
@@ -40,7 +52,13 @@ export function loadState(statePath: string, config: ScraperConfig): WatchState 
   if (existsSync(statePath)) {
     try {
       const parsed = JSON.parse(readFileSync(statePath, 'utf8')) as WatchState;
-      if (parsed.config && parsed.baseline) return parsed;
+      if (parsed.config && parsed.baseline) {
+        return {
+          ...parsed,
+          // tolerate state written before the ledger existed
+          ledger: Array.isArray(parsed.ledger) ? parsed.ledger : [],
+        };
+      }
     } catch {
       // corrupt state — start over rather than die
     }
@@ -48,6 +66,7 @@ export function loadState(statePath: string, config: ScraperConfig): WatchState 
   return {
     config,
     baseline: [],
+    ledger: [],
     lastStatus: 'healthy',
     lastCheckedAt: new Date().toISOString(),
     alertCount: 0,
@@ -63,6 +82,51 @@ function runAlertHook(command: string | undefined, summary: string): void {
   if (!command) return;
   const child = spawn(command, { shell: true, env: { ...process.env, SCRAPE_HEAL_ALERT: summary } });
   child.on('error', (err) => console.error(`  alert hook failed: ${err.message}`));
+}
+
+// ---------------------------------------------------------------- ledger ---
+
+const LEDGER_MAX = 8;
+
+function configSignature(config: ScraperConfig): string {
+  const fields = [...config.fields].sort((a, b) => a.name.localeCompare(b.name));
+  return JSON.stringify({ items: config.items, fields, identityField: config.identityField });
+}
+
+/** Remember a proven config, newest first, deduped by its selectors. */
+function rememberLedger(state: WatchState, config: ScraperConfig, now: string): void {
+  const sig = configSignature(config);
+  const rest = state.ledger.filter((e) => configSignature(e.config) !== sig);
+  state.ledger = [{ config, verifiedAt: now, hits: 0 }, ...rest].slice(0, LEDGER_MAX);
+}
+
+/**
+ * Try the remembered configs against the live page, newest first, before
+ * running a full heal. A config that re-extracts the current baseline is a
+ * verified repair — the site flipped back to markup we've already decoded.
+ */
+async function tryLedger(
+  browser: Browser,
+  state: WatchState,
+): Promise<{ config: ScraperConfig; data: ExtractedItem[] } | null> {
+  const currentSig = configSignature(state.config);
+  for (const entry of state.ledger) {
+    if (configSignature(entry.config) === currentSig) continue; // this one just failed
+    const page = await browser.newPage();
+    try {
+      const items = await extract(entry.config, page);
+      const v = validate(entry.config, items, state.baseline);
+      if (v.ok) {
+        entry.hits += 1;
+        return { config: entry.config, data: items };
+      }
+    } catch {
+      // page failed to load — try the next remembered config
+    } finally {
+      await page.close();
+    }
+  }
+  return null;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -105,6 +169,7 @@ export async function runWatchdog(
   if (configOverride?.url && configOverride.url !== state.config.url) {
     state.config = configOverride;
     state.baseline = [];
+    state.ledger = [];
     state.alertCount = 0;
     state.lastStatus = 'healthy';
   }
@@ -143,6 +208,7 @@ export async function runWatchdog(
 
     if (v.ok) {
       state.baseline = items;
+      rememberLedger(state, config, checkedAt);
       state.lastStatus = 'healthy';
       state.lastCheckedAt = checkedAt;
       exitCode = 0;
@@ -173,38 +239,63 @@ export async function runWatchdog(
         continue;
       }
 
-      const result = await heal(browser, config, state.baseline);
-      if (result.repaired && result.verified) {
-        // The repaired config takes effect immediately — the next cycle must
-        // not re-detect the same break against the stale selectors.
-        config = result.config;
-        state.config = result.config;
-        state.baseline = result.verified;
+      // ---- the ledger: remembered configs first --------------------------
+      // A site that flip-flops between markup versions (A/B rollouts, cached
+      // deploys, rollbacks) hits a previously-proven config before the healer
+      // re-derives one from scratch. Same verify-then-ship gate — the memory
+      // is what makes a flip cost nothing.
+      const remembered = await tryLedger(browser, state);
+      if (remembered) {
+        config = remembered.config;
+        state.config = remembered.config;
+        state.baseline = remembered.data;
         state.lastStatus = 'repaired';
         state.healedAt = checkedAt;
         state.lastCheckedAt = checkedAt;
         exitCode = 0;
         if (opts.writeConfigPath) {
-          writeConfig(opts.writeConfigPath, result.config);
+          writeConfig(opts.writeConfigPath, remembered.config);
           opts.log(`  config written → ${opts.writeConfigPath}`);
         }
-        opts.log(`[cycle ${cycle}] REPAIRED — "${result.config.items}" + ${result.config.fields.map((f) => `${f.name}:"${f.selector}"`).join(', ')}`);
-        for (const a of result.attempts) opts.log(`  ${a}`);
+        opts.log(
+          `[cycle ${cycle}] LEDGER HIT — "${remembered.config.items}" + ${remembered.config.fields.map((f) => `${f.name}:"${f.selector}"`).join(', ')}`,
+        );
+        opts.log('  remembered config re-verified on the live page — shipped without re-healing');
       } else {
-        state.lastStatus = 'red';
-        state.alertCount += 1;
-        state.lastCheckedAt = checkedAt;
-        exitCode = 1;
-        const summary = `cycle ${cycle}: extraction failed against ${config.url} — ${v.issues.join('; ')}; repair not verified, nothing shipped`;
-        opts.log('');
-        opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        opts.log(`  ${summary}`);
-        opts.log('  heal log:');
-        for (const a of result.attempts) opts.log(`    ${a}`);
-        opts.log('  Nothing was modified. The data is still broken and someone should look.');
-        opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        opts.log('');
-        runAlertHook(opts.onAlert, summary);
+        const result = await heal(browser, config, state.baseline);
+        if (result.repaired && result.verified) {
+          // The repaired config takes effect immediately — the next cycle must
+          // not re-detect the same break against the stale selectors.
+          config = result.config;
+          state.config = result.config;
+          state.baseline = result.verified;
+          state.lastStatus = 'repaired';
+          state.healedAt = checkedAt;
+          state.lastCheckedAt = checkedAt;
+          exitCode = 0;
+          if (opts.writeConfigPath) {
+            writeConfig(opts.writeConfigPath, result.config);
+            opts.log(`  config written → ${opts.writeConfigPath}`);
+          }
+          opts.log(`[cycle ${cycle}] REPAIRED — "${result.config.items}" + ${result.config.fields.map((f) => `${f.name}:"${f.selector}"`).join(', ')}`);
+          for (const a of result.attempts) opts.log(`  ${a}`);
+          rememberLedger(state, result.config, checkedAt);
+        } else {
+          state.lastStatus = 'red';
+          state.alertCount += 1;
+          state.lastCheckedAt = checkedAt;
+          exitCode = 1;
+          const summary = `cycle ${cycle}: extraction failed against ${config.url} — ${v.issues.join('; ')}; repair not verified, nothing shipped`;
+          opts.log('');
+          opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          opts.log(`  ${summary}`);
+          opts.log('  heal log:');
+          for (const a of result.attempts) opts.log(`    ${a}`);
+          opts.log('  Nothing was modified. The data is still broken and someone should look.');
+          opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          opts.log('');
+          runAlertHook(opts.onAlert, summary);
+        }
       }
     }
 

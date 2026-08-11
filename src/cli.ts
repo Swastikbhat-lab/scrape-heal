@@ -107,6 +107,11 @@ if (cycles !== undefined && (!Number.isFinite(cycles) || cycles <= 0)) {
   process.exit(2);
 }
 const mutateEvery = args.has('mutate') ? Number(args.get('mutate')) : undefined;
+const mutateFlipEvery = args.has('mutate-flip') ? Number(args.get('mutate-flip')) : undefined;
+if (mutateEvery !== undefined && mutateFlipEvery !== undefined) {
+  console.error('use --mutate OR --mutate-flip, not both');
+  process.exit(2);
+}
 
 // ---- demo fixture server ----------------------------------------------------
 let server: ReturnType<typeof createServer> | null = null;
@@ -116,7 +121,8 @@ if (isDemo) {
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.end(readFileSync(current));
   });
-  await new Promise<void>((ok) => server!.listen(0, '127.0.0.1', ok));
+  const listenPort = args.has('port') ? Number(args.get('port')) : 0;
+  await new Promise<void>((ok) => server!.listen(listenPort, '127.0.0.1', ok));
 }
 const port = server ? (server.address() as { port: number }).port : 0;
 
@@ -165,6 +171,18 @@ if (mutateEvery !== undefined) {
   }, mutateEvery * 1000);
 }
 
+// ---- flip mode: the site toggles between markup versions every N seconds ---
+// The flip-flop is what the ledger exists for: after the first heal, a switch
+// back to known markup is a LEDGER HIT, not a re-heal.
+if (mutateFlipEvery !== undefined) {
+  let version = 1;
+  setInterval(() => {
+    version = version === 1 ? 2 : 1;
+    copyFileSync(fixture(`site-v${version}.html`), current);
+    console.log(`  [flip] the site switched to the v${version} markup — A/B rollback`);
+  }, mutateFlipEvery * 1000);
+}
+
 const fetchRows: RowFetch | undefined = rowsFrom
   ? commandRows(rowsFrom)
   : rowsFile
@@ -175,7 +193,7 @@ const statePath = args.get('state') ?? fileCfg.statePath ?? DEFAULT_STATE;
 const writeConfigPath = args.get('write-config') ?? fileCfg.writeConfig;
 const onAlert = args.get('on-alert') ?? fileCfg.onAlert;
 
-console.log(`  watching ${config.url || '(rows source)'} every ${interval}s${cycles ? ` for ${cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}${fetchRows ? ' (rows from an external scraper)' : ''}`);
+console.log(`  watching ${config.url || '(rows source)'} every ${interval}s${cycles ? ` for ${cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}${mutateFlipEvery !== undefined ? `, markup flips every ${mutateFlipEvery}s` : ''}${fetchRows ? ' (rows from an external scraper)' : ''}`);
 if (filePath) console.log(`  config → ${filePath}`);
 console.log(`  state → ${statePath}`);
 if (onAlert) console.log('  alert hook armed');

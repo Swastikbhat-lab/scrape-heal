@@ -126,6 +126,16 @@ moment a cycle goes red (webhook, desktop notification); the one-line summary ar
 `SCRAPE_HEAL_ALERT` env var. State persists in `.scrape-heal/state.json`, so a restart resumes the
 healed config — no re-detecting, no re-healing.
 
+**Flip-flopping sites cost nothing after the first heal.** Every proven config — the original one
+and every verified repair — goes into a mini-ledger (persisted in state). When a cycle goes red,
+the loop first tries the remembered configs against the live page; the moment one re-extracts the
+same data, it's shipped as a `LEDGER HIT` without re-healing. A site that toggles between markup
+versions (A/B rollouts, cached deploys, rollbacks) is healed once and remembered forever after:
+
+```bash
+npm run watch -- --demo --mutate-flip 12 --interval 5 --cycles 14   # flip-flop demo
+```
+
 ## What it refuses to do
 
 - **Ship unverified repairs.** If the candidate doesn't re-extract the same data, you get a log
@@ -135,12 +145,12 @@ healed config — no re-detecting, no re-healing.
 
 ## What's next (honestly)
 
-This is a PoC, deliberately small. The interesting next steps:
+This is a PoC, deliberately small — the detect → heal → verify loop, watchdog mode, the
+any-scraper row contract, and the selector ledger for flip-flopping sites are all shipped.
+The interesting next steps:
 
 - **LLM-assisted repair** for selectors whose *values* changed too (then you must infer intent from
   structure, not text).
-- **Remembering healed configs** — a mini-ledger of previously-proven selectors, so a site that
-  flip-flops between markup versions stops being re-healed every cycle.
 - **Pluggable validators** — use the schema you already own instead of the built-in shape checks.
 - **The anti-detection arms race** is real and this isn't that. This is about the 99% case: markup
   changed, data still there, nobody noticed.

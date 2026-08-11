@@ -33,7 +33,7 @@ export { extract, validate } from './scraper.js';
 export type { HealResult } from './heal.js';
 export { heal } from './heal.js';
 
-export type { WatchOptions, WatchState } from './watchdog.js';
+export type { WatchOptions, WatchState, LedgerEntry } from './watchdog.js';
 export { runWatchdog, loadState } from './watchdog.js';
 
 export type { RowFetch } from './source.js';
