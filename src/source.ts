@@ -53,6 +53,18 @@ export function parseRows(text: string): ExtractedItem[] {
     return Array.isArray(arr) ? (arr as ExtractedItem[]) : [];
   }
 
+  // JSON Lines — one JSON object per line (Scrapy's stdout default).
+  if (t.startsWith('{')) {
+    const rows: ExtractedItem[] = [];
+    for (const line of t.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === 'object') rows.push(obj as ExtractedItem);
+    }
+    return rows;
+  }
+
   // CSV with a header row. Naive but sufficient: quoted fields, doubled
   // quotes, no embedded newlines.
   const lines = t.split(/\r?\n/).filter(Boolean);

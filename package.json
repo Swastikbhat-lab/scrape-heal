@@ -13,7 +13,8 @@
     "init": "tsx src/cli.ts --init",
     "watch": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "make:gif": "node scripts/make-demo-gif.mjs"
+    "make:gif": "node scripts/make-demo-gif.mjs",
+    "make:gifs": "node scripts/make-demo-gif.mjs && node scripts/make-watchdog-gif.mjs"
   },
   "dependencies": {
     "playwright": "^1.49.0"
