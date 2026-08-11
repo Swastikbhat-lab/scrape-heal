@@ -15,7 +15,7 @@ repairs its own selectors — **only after proving the repair works on the live 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
 [![Playwright](https://img.shields.io/badge/powered%20by-Playwright-2f9e44?logo=playwright&logoColor=white)](#)
-[![status](https://img.shields.io/badge/status-proof%20of%20concept-8b949e)](#)
+[![CI](https://github.com/Swastikbhat-lab/scrape-heal/actions/workflows/ci.yml/badge.svg)](https://github.com/Swastikbhat-lab/scrape-heal/actions/workflows/ci.yml)
 
 </div>
 
