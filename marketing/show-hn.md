@@ -18,6 +18,17 @@ posting.
 
 ## Body (first comment)
 
+> **The GIF is the centerpiece — it goes at the very top of the first comment.**
+> HN doesn't embed images inline, so use the markdown-image link below: it
+> renders as a clickable "demo" that opens the GIF page (GitHub auto-plays it),
+> and the repo link at the bottom makes the same GIF the first thing readers
+> see when they click through.
+
+See it happen (24 seconds, no sound):
+[![scrape-heal demo](https://github.com/Swastikbhat-lab/scrape-heal/raw/main/docs/demo.gif)](https://github.com/Swastikbhat-lab/scrape-heal/blob/main/docs/demo.gif)
+
+---
+
 My scraper broke at some point last month and I found out when a spreadsheet came
 back empty a week later. No error. The site just renamed a few classes in a redesign
 and my `$('.price')` was suddenly pointing at nothing.

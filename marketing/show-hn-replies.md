@@ -134,3 +134,20 @@ If someone engages with either of the two questions from the post ("data
 changes, not just markup" or "how do you find out about breakage"), reply with
 a real answer of your own and a concrete example, not a sales line. The
 question thread is where the product gets better.
+
+---
+
+## The GIF is your reply asset
+
+Whenever a comment asks "can I see it?", "any demo?", or "what does this
+actually do?", lead with the GIF — it's the pitch that reads itself:
+
+> Sure — 24-second loop of the whole story: healthy run, silent redesign,
+> breakage detected, selectors healed, verified on the live page:
+> https://github.com/Swastikbhat-lab/scrape-heal/blob/main/docs/demo.gif
+>
+> (The repo README starts with the same animation, so clicking through
+> re-plays it without hunting.)
+
+Same URL works in every comment — one asset, zero typing.
+
