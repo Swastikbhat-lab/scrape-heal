@@ -226,7 +226,7 @@ that litter GitHub would mostly not exist.
 
 <div align="center">
 
-MIT licensed · [issues & ideas welcome](https://github.com/Swastikbhat-lab/scrape-heal/issues)
+MIT licensed · [issues & ideas welcome](https://github.com/Swastikbhat-lab/scrape-heal/issues) · [contributing](CONTRIBUTING.md)
 
 ⭐ Star it if your cron job has ever silently returned nothing.
 

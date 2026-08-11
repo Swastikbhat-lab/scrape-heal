@@ -1,0 +1,47 @@
+name: Feature request
+description: An idea for making the loop smarter, more honest, or more pluggable.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two questions shape every feature here: does it fit the 99% case (markup
+        changed, data still there, nobody noticed), and does it keep the verify gate
+        intact?
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the problem, concretely?
+      description: The situation where today's scrape-heal falls short. Real examples beat hypotheticals.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would fix it?
+      description: Behavior, not implementation — what the loop should do differently.
+    validations:
+      required: true
+  - type: textarea
+    id: alternative
+    attributes:
+      label: What did you consider instead?
+      description: Workarounds, existing tools, a config change. Helps judge whether this belongs in the core.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where does this fit?
+      options:
+        - The 99% case — markup changed, data still there
+        - Any-scraper / plug-and-play surface
+        - Honesty / observability (better alerts, clearer refusals)
+        - A new direction entirely (say more in the description)
+  - type: checkboxes
+    id: gate
+    attributes:
+      label: Verify gate
+      description: If this adds a repair path, it must still verify against the live page before shipping.
+      options:
+        - label: "I understand: no unverified repairs, ever."
+          required: true

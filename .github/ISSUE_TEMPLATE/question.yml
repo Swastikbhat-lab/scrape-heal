@@ -1,0 +1,23 @@
+name: Question
+description: How does this work? What should it be pointed at? Why does it refuse here?
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        No such thing as a dumb question — "how does X work?" usually turns into
+        documentation, which is how this project grows.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Include the config or command you're working with, so the answer fits your case.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit or version you're on (optional, but helps).
+      placeholder: "main @ bb1ecca"

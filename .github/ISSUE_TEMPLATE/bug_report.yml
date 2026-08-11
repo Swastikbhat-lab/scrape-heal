@@ -1,0 +1,67 @@
+name: Bug report
+description: Something broke — a repair that shouldn't have shipped, or a loop that should have caught a break.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing this. The most useful bug reports include the log lines —
+        paste them even if they look long.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: The watchdog/heal log, the exit code, the output you saw.
+      placeholder: "[cycle 4] RED — expected at least 4 item(s), got 0 …"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened?
+      description: e.g. "the loop should have repaired this" vs "the loop should have refused to ship".
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Config (scraper.config.json or the exact CLI flags), the target URL or a fixture, and the command line. A minimal fixture that reproduces it is the fastest path to a fix.
+      render: bash
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part is involved?
+      multiple: true
+      options:
+        - detect / validate
+        - heal — text pass
+        - heal — LLM pass
+        - selector ledger
+        - watchdog / CLI
+        - any-scraper (rowsFrom / rowsFile)
+        - pluggable validators
+        - docs
+        - something else
+  - type: textarea
+    id: checks
+    attributes:
+      label: Checks before submitting
+      description: Paste the tail of both. A failing test on main is itself a bug worth filing.
+      render: bash
+      value: |
+        npm run typecheck
+        npm test
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Node version, OS, Playwright version (`node -v`).
+      placeholder: "Node 22 / Windows 11 / Playwright 1.49"
+    validations:
+      required: true
