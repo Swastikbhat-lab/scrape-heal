@@ -6,6 +6,7 @@ import type { ScraperConfig, ExtractedItem, Validator } from './scraper.js';
 import { extract, validate } from './scraper.js';
 import { heal, siteOrigin } from './heal.js';
 import type { LLMOptions, SiteLLMMemory } from './llm.js';
+import { sendAlert, type AlertChannel } from './alert.js';
 import { playwrightRows, type RowFetch } from './source.js';
 
 export interface LedgerEntry {
@@ -55,6 +56,8 @@ export interface WatchOptions {
   llm?: LLMOptions;
   /** Pluggable validator — replaces the built-in shape checks everywhere. */
   validator?: Validator;
+  /** Notify humans the day a cycle breaks — Slack/Discord/webhook channels. */
+  alerts?: AlertChannel;
   log: (line: string) => void;
 }
 
@@ -96,6 +99,23 @@ function runAlertHook(command: string | undefined, summary: string): void {
   if (!command) return;
   const child = spawn(command, { shell: true, env: { ...process.env, SCRAPE_HEAL_ALERT: summary } });
   child.on('error', (err) => console.error(`  alert hook failed: ${err.message}`));
+}
+
+/** The shell hook (exit-code world) plus the webhook channels (human world). */
+async function runAlerts(
+  opts: { onAlert?: string; alerts?: AlertChannel; log: (line: string) => void },
+  summary: string,
+  cycle: number,
+  target: string,
+): Promise<void> {
+  runAlertHook(opts.onAlert, summary);
+  if (!opts.alerts) return;
+  try {
+    await sendAlert(opts.alerts, { target, cycle, summary, at: new Date().toISOString() });
+    opts.log(`  alert sent → ${Object.keys(opts.alerts).join(', ')}`);
+  } catch (err) {
+    opts.log(`  alert delivery failed — ${(err as Error).message}`);
+  }
 }
 
 // ---------------------------------------------------------------- ledger ---
@@ -214,7 +234,7 @@ export async function runWatchdog(
       opts.log('  This is a scraper failure, not a site change — check the scraper itself.');
       opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       opts.log('');
-      runAlertHook(opts.onAlert, `cycle ${cycle}: scraper source failed to produce rows`);
+      await runAlerts(opts, `cycle ${cycle}: scraper source failed to produce rows`, cycle, config.url || '(rows source)');
       saveState(opts.statePath, state);
       if (opts.cycles !== undefined && cycle >= opts.cycles) break;
       await sleep(opts.intervalSeconds * 1000);
@@ -249,7 +269,7 @@ export async function runWatchdog(
         opts.log('  Add --url <target> to enable self-healing; until then, detection only.');
         opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         opts.log('');
-        runAlertHook(opts.onAlert, `cycle ${cycle}: ${v.issues.join('; ')}`);
+        await runAlerts(opts, `cycle ${cycle}: ${v.issues.join('; ')}`, cycle, config.url || '(rows source)');
         saveState(opts.statePath, state);
         if (opts.cycles !== undefined && cycle >= opts.cycles) break;
         await sleep(opts.intervalSeconds * 1000);
@@ -317,7 +337,7 @@ export async function runWatchdog(
           opts.log('  Nothing was modified. The data is still broken and someone should look.');
           opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
           opts.log('');
-          runAlertHook(opts.onAlert, summary);
+          await runAlerts(opts, summary, cycle, config.url);
         }
       }
     }

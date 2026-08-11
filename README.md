@@ -100,6 +100,7 @@ One config file, one command. Every key optional; CLI flags override the file wh
   "statePath": ".scrape-heal/state.json",
   "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null, "maxAttempts": 3 },  // or env SCRAPE_HEAL_LLM_*
   "validator": null,                       // path to a JS file exporting your schema check
+  "alerts": null,                          // or: {"slack": "…", "discord": "…", "webhook": "…"}
   "targets": null                          // or: a fleet — see "Watch a fleet" below
 }
 ```
@@ -144,6 +145,16 @@ moment a cycle goes red (webhook, desktop notification); the one-line summary ar
 `SCRAPE_HEAL_ALERT` env var. State persists in `.scrape-heal/state.json`, so a restart resumes the
 healed config — no re-detecting, no re-healing.
 
+**Alert the humans, not just the scheduler.** `alerts` posts to real channels the day a run goes
+red and can't be repaired — Slack or Discord incoming-webhook URLs, or any generic JSON webhook
+(which receives the raw message and can feed anything else):
+
+```jsonc
+"alerts": { "slack": "https://hooks.slack.com/…", "discord": "…", "webhook": "https://…" }
+```
+
+Per-target in a fleet config. Delivery is best-effort — a dead webhook is logged, never fatal.
+
 **Flip-flopping sites cost nothing after the first heal.** Every proven config — the original one
 and every verified repair — goes into a mini-ledger (persisted in state). When a cycle goes red,
 the loop first tries the remembered configs against the live page; the moment one re-extracts the
@@ -185,6 +196,9 @@ selector-hit counts from the live page — is fed back and the model tries again
 remembered **per site** in state, so the next time the same site breaks, the model starts from
 what it already learned instead of from scratch — and it's told which proposals failed before,
 so it doesn't repeat them.
+
+**See what it has learned.** `scrape-heal --memory <site>` prints the verified repairs and failed
+proposals the loop remembers for that site; `scrape-heal --memory` lists every site it remembers.
 
 ## Your schema, your rules (pluggable validators)
 
@@ -228,6 +242,7 @@ validator, and state file:
     {
       "url": "https://shop-b.example.com/items",
       "validator": "validator-b.js",       // its own schema
+      "alerts": { "slack": "https://hooks.slack.com/…" },   // its own channel
       "intervalSeconds": 600                // its own cadence
     }
   ]
@@ -251,16 +266,17 @@ independently, and the exit code is 1 if *any* target ended red. State lives per
 Small by design — one machine, several targets, one loop. Shipped so far: the detect → heal →
 verify loop, watchdog mode, the any-scraper row contract, the selector ledger for flip-flopping
 sites, LLM-assisted repair for when even the values change (with a repair budget that learns
-from its own misses), pluggable validators, and multi-target watch from one config file — all
-covered by the test suite, all green in CI. What this is *not*: a fleet manager, an anti-bot
-tool, or a multi-node production deployment. It is the 99% case, done well. The interesting
-next steps:
+from its own misses), pluggable validators, multi-target watch from one config file, human
+alerting to Slack/Discord/webhook, and learned-rule visibility (`scrape-heal --memory <site>`)
+— all covered by the test suite, all green in CI. What this is *not*: a fleet manager, an
+anti-bot tool, or a multi-node production deployment. It is the 99% case, done well. The
+interesting next steps:
 
-- **Fleet alerting, not just exit codes** — the loop can fail a scheduler; a Slack/email/webhook
-  pack would make N targets visible to humans the day they break.
-- **Learned-rule visibility** — the per-site LLM memory is inspectable in state; a
-  `scrape-heal --memory <site>` command (or a dashboard) would show what the loop has learned
-  and why it repairs the way it does.
+- **Alert throttling** — a target that stays broken would ping the channel every cycle; a
+  cooldown (one alert per target per N minutes) is the difference between a channel people
+  read and one they mute.
+- **A live dashboard** — the loop writes everything to state files; a small SSE server over them
+  would show N targets' last cycle, heal history, and learned rules at a glance.
 - **The anti-detection arms race** is real and this isn't that. This is about the 99% case: markup
   changed, data still there, nobody noticed.
 

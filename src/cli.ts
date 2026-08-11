@@ -9,7 +9,9 @@ import type { ScraperConfig, Validator } from './scraper.js';
 import { runWatchdog } from './watchdog.js';
 import { commandRows, fileRows, type RowFetch } from './source.js';
 import { loadValidator } from './validator.js';
-import type { LLMOptions } from './llm.js';
+import type { AlertChannel } from './alert.js';
+import { formatMemory } from './memory.js';
+import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import {
   CONFIG_FILENAME, readConfigFile, fieldsFrom, initConfig, mergeTargetConfigs,
   type WatchFileConfig,
@@ -85,6 +87,27 @@ if (isDemo && args.has('config')) {
   process.exit(2);
 }
 
+// ---- --memory [site]: show what the loop has learned about a site ----------
+// Learned-rule visibility: the per-site LLM memory (verified repairs + failed
+// proposals) lives in the state file. Print it for one site or for all.
+if (args.has('memory')) {
+  const site = args.get('memory') === 'true' ? undefined : args.get('memory');
+  const memPath = args.get('state') ?? fileCfg.statePath ?? DEFAULT_STATE;
+  let memory: Record<string, SiteLLMMemory> = {};
+  if (existsSync(memPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(memPath, 'utf8')) as {
+        llmMemory?: Record<string, SiteLLMMemory>;
+      };
+      memory = parsed.llmMemory ?? {};
+    } catch {
+      memory = {};
+    }
+  }
+  console.log(formatMemory(memory, site));
+  process.exit(0);
+}
+
 // ---- flags override the file ------------------------------------------------
 const rowsFrom = args.get('rows-from') ?? fileCfg.rowsFrom;
 const rowsFile = args.get('rows-file') ?? fileCfg.rowsFile;
@@ -122,6 +145,7 @@ interface WatchSpec {
   onAlert?: string;
   fetchRows?: RowFetch;
   llm?: LLMOptions;
+  alerts?: AlertChannel;
   validatorPath?: string;
   validator?: Validator;
 }
@@ -204,7 +228,7 @@ function watchFrom(
   const validatorPath = args.get('validator') ?? cfg.validator;
   return {
     label, config, intervalSeconds: interval, cycles, statePath,
-    writeConfigPath, onAlert, fetchRows, llm, validatorPath,
+    writeConfigPath, onAlert, fetchRows, llm, alerts: cfg.alerts, validatorPath,
   };
 }
 
@@ -282,7 +306,8 @@ if (targets.length > 0) {
       `  [${s.label}] ${s.config.url} every ${s.intervalSeconds}s${s.cycles ? ` for ${s.cycles} cycle(s)` : ''}` +
       `${s.fetchRows ? ' (rows from an external scraper)' : ''}` +
       `${s.llm ? ` · llm repair (${s.llm.model ?? 'gpt-4o-mini'}, ${s.llm.maxAttempts ?? 3} attempt(s))` : ''}` +
-      `${s.validator ? ' · custom validator' : ''}`,
+      `${s.validator ? ' · custom validator' : ''}` +
+      `${s.alerts ? ` · alerts: ${Object.keys(s.alerts).join(',')}` : ''}`,
     );
   }
   console.log('');
@@ -299,6 +324,7 @@ if (targets.length > 0) {
       writeConfigPath: s.writeConfigPath,
       llm: s.llm,
       validator: s.validator,
+      alerts: s.alerts,
       log: (line) => console.log(`[${s.label}] ${line}`),
     }, s.config);
   }));
@@ -399,6 +425,7 @@ console.log(`  state → ${spec.statePath}`);
 if (spec.onAlert) console.log('  alert hook armed');
 if (spec.llm) console.log(`  llm repair armed — model ${spec.llm.model ?? 'gpt-4o-mini'}, ${spec.llm.maxAttempts ?? 3} attempt(s)${llmMock ? ' (mock endpoint, no API key needed)' : ''}`);
 if (spec.validator) console.log(`  validator → ${spec.validatorPath}`);
+if (spec.alerts) console.log(`  alerts → ${Object.keys(spec.alerts).join(', ')}`);
 if (spec.fetchRows && !spec.config.url) console.log('  detection only — set url to enable self-healing');
 console.log('');
 
@@ -414,6 +441,7 @@ const exitCode = await runWatchdog(browser, page, {
   writeConfigPath: spec.writeConfigPath,
   llm: spec.llm,
   validator: spec.validator,
+  alerts: spec.alerts,
   log: (line) => console.log(line),
 }, spec.config);
 

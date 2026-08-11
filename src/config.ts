@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { FieldConfig, ScraperConfig } from './scraper.js';
+import type { AlertChannel } from './alert.js';
 
 /**
  * The on-disk watch config. Friendlier than the internal shape: fields is an
@@ -37,6 +38,9 @@ export interface WatchFileConfig {
   /** Path to a JS file exporting a validator function that replaces the
    *  built-in shape checks. */
   validator?: string;
+  /** Notify humans the day a target breaks: Slack / Discord / generic JSON
+   *  webhook URLs. Per-target in a `targets` config. */
+  alerts?: AlertChannel;
   /** Multiple targets: each entry is its own watch config, merged over the
    *  top-level keys as defaults. Each target gets its own selectors, cadence,
    *  LLM config, validator, and state file — a fleet of scrapers, one config. */
@@ -57,6 +61,9 @@ export function mergeTargetConfigs(
   const merged: WatchFileConfig = { ...globals, ...t };
   if (global.llm || t.llm) {
     merged.llm = { ...(global.llm ?? {}), ...(t.llm ?? {}) };
+  }
+  if (global.alerts || t.alerts) {
+    merged.alerts = { ...(global.alerts ?? {}), ...(t.alerts ?? {}) };
   }
   return merged;
 }
@@ -114,6 +121,9 @@ export const TEMPLATE = `{
 
   "_validator": "Optional: path to a JS file exporting a function (items, {config, baseline}) => {ok, itemCount, issues} that replaces the built-in shape checks.",
   "validator": null,
+
+  "_alerts": "Optional: notify humans the day a cycle breaks. Incoming-webhook URLs — Slack, Discord, or any generic JSON webhook.",
+  "alerts": { "slack": null, "discord": null, "webhook": null },
 
   "_targets": "Optional: watch a fleet. Each entry is its own target; the top-level keys above are its defaults. Each target gets its own selectors, cadence, llm, validator, and state file. Delete the single-target keys above when using targets.",
   "targets": [

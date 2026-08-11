@@ -41,6 +41,11 @@ export { describeStructure, proposeWithLLM, parseProposal, rememberLLM } from '.
 
 export { loadValidator } from './validator.js';
 
+export type { AlertChannel, AlertMessage } from './alert.js';
+export { sendAlert } from './alert.js';
+
+export { formatMemory } from './memory.js';
+
 export type { RowFetch } from './source.js';
 export { playwrightRows, commandRows, fileRows, parseRows } from './source.js';
 

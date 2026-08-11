@@ -39,9 +39,11 @@ src/
   validator.ts   loadValidator() — pluggable schema files
   watchdog.ts    the loop: extract → validate → ledger → heal → alert
   source.ts      the any-scraper contract: rows from a command, file, or Playwright
+  alert.ts       Slack/Discord/generic-webhook delivery for unhealable red runs
+  memory.ts      --memory output: what the loop has learned per site
   config.ts      scraper.config.json parsing + template + mergeTargetConfigs
   cli.ts         the CLI: flags, demo fixture server, mock LLM endpoint,
-                 concurrent multi-target mode
+                 concurrent multi-target mode, --memory
   demo.ts        the 15-second story demo (npm run demo)
   demo-any.ts    same loop with a fetch+regex scraper (npm run demo:any)
 fixture/         site-v1/v2/v3.html (the redesigns), regex-scraper.mjs, validator.js
