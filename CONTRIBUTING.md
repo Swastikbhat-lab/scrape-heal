@@ -1,7 +1,6 @@
 # Contributing to scrape-heal
 
-Thanks for showing up. This is a deliberately small project — that's a feature, not
-a bug. The whole loop fits in your head:
+Thanks for showing up. This is a deliberately small project — The whole loop fits in your head:
 
 > **detect → heal → verify.** If the repair can't be verified on the live page, nothing ships.
 
