@@ -155,7 +155,7 @@ that litter GitHub would mostly not exist.
 
 <div align="center">
 
-Made for fun · MIT licensed · [issues & ideas welcome](https://github.com/Swastikbhat-lab/scrape-heal/issues)
+ MIT licensed · [issues & ideas welcome](https://github.com/Swastikbhat-lab/scrape-heal/issues)
 
 ⭐ Star it if your cron job has ever silently returned nothing.
 
