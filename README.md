@@ -25,7 +25,7 @@ repairs its own selectors — **only after proving the repair works on the live 
 flowchart LR
     A["extract rows"] --> B{"validate vs the<br/>last good run"}
     B -->|"same shape ✓"| C["refresh baseline"]
-    B -->|"broken ✗"| D["hunt the known values<br/>on the live page"]
+    B -->|"broken ✗"| D["hunt the known values —<br/>or ask the model<br/>(when values changed)"]
     D --> E["verify: re-extract<br/>must match"]
     E -->|"pass"| F[" ship the repair"]
     E -->|"fail"| G[" alert — change nothing"]
@@ -90,7 +90,9 @@ One config file, one command. Every key optional; CLI flags override the file wh
   "rowsFrom": null,                        // or: run any scraper, read JSON/CSV rows
   "writeConfig": "scraper.config.json",    // repaired selectors, written back here
   "onAlert": null,                         // command run on an unhealable red cycle
-  "statePath": ".scrape-heal/state.json"
+  "statePath": ".scrape-heal/state.json",
+  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null },  // or env SCRAPE_HEAL_LLM_*
+  "validator": null                        // path to a JS file exporting your schema check
 }
 ```
 
@@ -144,22 +146,72 @@ versions (A/B rollouts, cached deploys, rollbacks) is healed once and remembered
 npm run watch -- --demo --mutate-flip 12 --interval 5 --cycles 14   # flip-flop demo
 ```
 
+## When even the data changes (LLM repair)
+
+Text matching dies the moment the redesign *also changes the values* — nothing on the page equals
+a known value anymore, so there is no anchor to hunt. That's the one case where structure has to
+carry intent. Point scrape-heal at any OpenAI-compatible endpoint and the healer falls back to
+asking the model where each field now lives:
+
+```bash
+npm run demo:llm       # keyless: redesign + brand-new values, healed by a mock LLM
+npm run watch          # real: set the env vars below (or llm.apiKey in the config)
+```
+
+```
+SCRAPE_HEAL_LLM_API_KEY=sk-...
+SCRAPE_HEAL_LLM_MODEL=gpt-4o-mini
+SCRAPE_HEAL_LLM_BASE_URL=https://api.openai.com/v1   # OpenRouter, Groq, Ollama, LM Studio — any /v1/chat/completions
+```
+
+The model only **proposes**. The candidate config is still re-run against the live page, and a
+proposal that doesn't extract the right shape is refused with the same loud alert as any other
+failed repair — a bad model guess is exactly as safe as a bad text guess. When the old values are
+gone for real (the data changed), the gate verifies shape honestly — right count, no empty fields
+— and says so in the log instead of pretending it verified the data. Propose with the model,
+**verify with the browser** — the split stays intact.
+
+## Your schema, your rules (pluggable validators)
+
+The built-in checks are deliberately boring — enough items, no empty fields, same identities.
+When you already own a schema, plug it in instead:
+
+```bash
+npm run demo:validator    # example: a USD-price rule on top of the shape checks
+npm run watch -- --validator my-schema.js
+```
+
+`my-schema.js` exports one function:
+
+```js
+export default (items, { config, baseline }) => ({
+  ok: items.every((it) => /^\$\d/.test(it.price)),   // your rule
+  itemCount: items.length,
+  issues: [],                                          // filled in when ok is false
+});
+```
+
+It replaces the built-in shape checks *everywhere* — healthy runs, ledger hits, and the repair
+verify gate — so your schema is what "good" means, not a second opinion.
+
 ## What it refuses to do
 
 - **Ship unverified repairs.** If the candidate doesn't re-extract the same data, you get a log
   instead of a broken config.
 - **Invent data.** The repaired run must contain everything the last good run contained.
+- **Trust the model.** An LLM proposal is a proposal; it still has to pass the verify gate.
 - **"Heal" a crashed scraper.** A non-zero exit is a scraper bug, not a site change.
 
 ## What's next (honestly)
 
 This is a PoC, deliberately small — the detect → heal → verify loop, watchdog mode, the
-any-scraper row contract, and the selector ledger for flip-flopping sites are all shipped.
-The interesting next steps:
+any-scraper row contract, the selector ledger for flip-flopping sites, LLM-assisted repair for
+when even the values change, and pluggable validators are all shipped. The interesting next steps:
 
-- **LLM-assisted repair** for selectors whose *values* changed too (then you must infer intent from
-  structure, not text).
-- **Pluggable validators** — use the schema you already own instead of the built-in shape checks.
+- **LLM repair that learns from its own misses** — feed the failed proposal plus the page it
+  failed on back to the model, so per-site selector-writing rules accumulate.
+- **Per-target config** — today LLM/validator options are global; a fleet of scrapers would each
+  want its own rules and its own repair budget.
 - **The anti-detection arms race** is real and this isn't that. This is about the 99% case: markup
   changed, data still there, nobody noticed.
 

@@ -27,14 +27,19 @@
  * verifies a repair.
  */
 
-export type { ScraperConfig, FieldConfig, ExtractedItem, Validation } from './scraper.js';
-export { extract, validate } from './scraper.js';
+export type { ScraperConfig, FieldConfig, ExtractedItem, Validation, Validator } from './scraper.js';
+export { extract, validate, validateShape } from './scraper.js';
 
-export type { HealResult } from './heal.js';
+export type { HealResult, HealOptions } from './heal.js';
 export { heal } from './heal.js';
 
 export type { WatchOptions, WatchState, LedgerEntry } from './watchdog.js';
 export { runWatchdog, loadState } from './watchdog.js';
+
+export type { LLMOptions, HealProposal, SkeletonNode } from './llm.js';
+export { describeStructure, proposeWithLLM, parseProposal } from './llm.js';
+
+export { loadValidator } from './validator.js';
 
 export type { RowFetch } from './source.js';
 export { playwrightRows, commandRows, fileRows, parseRows } from './source.js';

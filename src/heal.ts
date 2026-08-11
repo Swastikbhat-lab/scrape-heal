@@ -1,6 +1,7 @@
 import type { Browser, Page } from 'playwright';
-import type { ScraperConfig, ExtractedItem, FieldConfig } from './scraper.js';
-import { extract, validate } from './scraper.js';
+import type { ScraperConfig, ExtractedItem, FieldConfig, Validator } from './scraper.js';
+import { extract, validate, validateShape } from './scraper.js';
+import { describeStructure, proposeWithLLM, type LLMOptions } from './llm.js';
 
 export interface HealResult {
   repaired: boolean;
@@ -10,6 +11,18 @@ export interface HealResult {
   config: ScraperConfig;
   /** What the repaired config extracted, verified against the live page. */
   verified: ExtractedItem[] | null;
+}
+
+export interface HealOptions {
+  /**
+   * LLM-assisted repair. Used only when the text-based healer finds no anchor
+   * at all — i.e. the redesign also changed the values, so there is nothing
+   * to match by text. The model proposes from structure; the proposal still
+   * has to pass the same verify gate before anything ships.
+   */
+  llm?: LLMOptions;
+  /** Pluggable validator — replaces the built-in shape checks everywhere. */
+  validator?: Validator;
 }
 
 interface Match {
@@ -70,17 +83,46 @@ const sel = (m: Pick<Match, 'tag' | 'cls'>): string =>
 /**
  * Repair a broken config.
  *
- * The trick that makes this safe: the *last good run* is the ground truth.
- * We know the items existed and we know what their fields contained, so the
- * healer looks for elements that still contain those exact values and derives
- * new selectors from them. Then — the load-bearing step — the candidate config
- * is re-run against the live page and only shipped if the schema validates
- * AND every known identity is still there. No verification, no repair.
+ * Two passes, one gate:
+ *
+ * 1. **By text** — the *last good run* is the ground truth. We know the items
+ *    existed and what their fields contained, so the healer looks for elements
+ *    that still contain those exact values and derives new selectors from them.
+ * 2. **By structure (LLM)** — when even the values changed, there is no text
+ *    anchor left. If an LLM is configured, the page's structural skeleton is
+ *    handed to it and it proposes where each field now lives.
+ *
+ * Then — the load-bearing step, identical for both passes — the candidate
+ * config is re-run against the live page and only shipped if the schema
+ * validates AND (for a text repair) every known identity is still there.
+ * No verification, no repair.
  */
 export async function heal(
   browser: Browser,
   config: ScraperConfig,
   baseline: ExtractedItem[],
+  opts: HealOptions = {},
+): Promise<HealResult> {
+  const textResult = await healByText(browser, config, baseline, opts.validator);
+  if (textResult.repaired) return textResult;
+
+  // LLM pass only when there is somewhere to send the request — a key, or a
+  // keyless local endpoint (Ollama, LM Studio).
+  if (!opts.llm || (!opts.llm.apiKey && !opts.llm.baseUrl)) return textResult;
+
+  const llmResult = await healByLLM(browser, config, baseline, opts);
+  return {
+    ...llmResult,
+    attempts: [...textResult.attempts, ...llmResult.attempts],
+  };
+}
+
+/** The primary pass: rediscover selectors by matching the known values. */
+async function healByText(
+  browser: Browser,
+  config: ScraperConfig,
+  baseline: ExtractedItem[],
+  validator?: Validator,
 ): Promise<HealResult> {
   const attempts: string[] = [];
   const id = config.identityField;
@@ -91,12 +133,12 @@ export async function heal(
     await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 });
 
     // The first pass is over identity values only: if nothing on the page
-    // still contains a single known identity, no repair can be derived.
+    // still contains a single known identity, no text repair can be derived.
     const identityMatches = await matchByText(page, known);
     if (!identityMatches.length) {
       attempts.push(
         `heal: no element on the page still contains any known "${id}" value — ` +
-        'the redesign may have changed the data itself. Nothing to anchor a repair to.',
+        'the redesign may have changed the data itself. Nothing to anchor a text repair to.',
       );
       return { repaired: false, attempts, config, verified: null };
     }
@@ -160,7 +202,7 @@ export async function heal(
     const check: Page = await browser.newPage();
     try {
       const extracted = await extract(candidate, check);
-      const v = validate(candidate, extracted, baseline);
+      const v = validate(candidate, extracted, baseline, validator);
       if (v.ok) {
         attempts.push(
           `heal: PASS — ${extracted.length} item(s), every known "${id}" present. Shipping the repair.`,
@@ -172,6 +214,83 @@ export async function heal(
     } finally {
       await check.close();
     }
+  } finally {
+    await page.close();
+  }
+}
+
+/**
+ * The fallback pass: the data itself changed, so structure must carry intent.
+ * The model sees a compact skeleton of the live page (with the *new* values as
+ * text samples) plus the old config and its last-good data, and proposes where
+ * each field now lives. The proposal is still verified against the live page.
+ */
+async function healByLLM(
+  browser: Browser,
+  config: ScraperConfig,
+  baseline: ExtractedItem[],
+  opts: HealOptions,
+): Promise<HealResult> {
+  const attempts: string[] = [];
+  const id = config.identityField;
+
+  const page: Page = await browser.newPage();
+  try {
+    await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 });
+    const skeleton = await describeStructure(page);
+    attempts.push(
+      `heal-llm: no text anchor survived — the data itself changed. Asking the model ` +
+      `to map the old fields onto the new structure (${skeleton.length} nodes sampled).`,
+    );
+
+    const proposal = await proposeWithLLM({ config, baseline, skeleton, llm: opts.llm! });
+    const fields: FieldConfig[] = config.fields.map((f) => ({
+      name: f.name,
+      selector: proposal.fields[f.name] ?? f.selector,
+    }));
+    const candidate: ScraperConfig = { ...config, items: proposal.items, fields };
+    attempts.push(
+      `heal-llm: proposal — items "${proposal.items}", ` +
+      fields.map((f) => `${f.name}:"${f.selector}"`).join(', '),
+    );
+
+    // ---- the same gate: verify on the live page before shipping -----------
+    attempts.push(`heal-llm: verifying "${candidate.items}" on the live page…`);
+    const check: Page = await browser.newPage();
+    try {
+      const extracted = await extract(candidate, check);
+
+      // Did the *values* really change, or did the model just find a better
+      // path to the same data? If the known identities survive, demand them.
+      const want = new Set(baseline.map((b) => (b[id] ?? '').trim()).filter(Boolean));
+      const have = new Set(extracted.map((it) => (it[id] ?? '').trim()));
+      const missing = [...want].filter((w) => !have.has(w));
+
+      const gate = opts.validator
+        ? opts.validator(extracted, { config: candidate, baseline })
+        : validateShape(candidate, extracted);
+      if (!gate.ok) {
+        attempts.push(`heal-llm: FAIL — ${gate.issues.join('; ')}. Nothing shipped.`);
+        return { repaired: false, attempts, config, verified: null };
+      }
+
+      if (missing.length === 0) {
+        attempts.push(
+          `heal-llm: PASS — ${extracted.length} item(s), every known "${id}" still present. Shipping the repair.`,
+        );
+      } else {
+        attempts.push(
+          `heal-llm: PASS — ${extracted.length} item(s). The old "${id}" values are gone (the data changed), ` +
+          'so verification is shape-only: correct count, no empty fields. Shipping the repair.',
+        );
+      }
+      return { repaired: true, attempts, config: candidate, verified: extracted };
+    } finally {
+      await check.close();
+    }
+  } catch (err) {
+    attempts.push(`heal-llm: error — ${(err as Error).message}. Nothing shipped.`);
+    return { repaired: false, attempts, config, verified: null };
   } finally {
     await page.close();
   }

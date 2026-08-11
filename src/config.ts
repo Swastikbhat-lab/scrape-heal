@@ -30,6 +30,13 @@ export interface WatchFileConfig {
   onAlert?: string;
   /** Where state (config + baseline) lives between runs. */
   statePath?: string;
+  /** LLM-assisted repair, used when even the values changed (no text anchor
+   *  survives). Any OpenAI-compatible endpoint works. Prefer the env vars for
+   *  the key: SCRAPE_HEAL_LLM_API_KEY / _MODEL / _BASE_URL. */
+  llm?: { apiKey?: string; model?: string; baseUrl?: string };
+  /** Path to a JS file exporting a validator function that replaces the
+   *  built-in shape checks. */
+  validator?: string;
 }
 
 export function readConfigFile(path: string): WatchFileConfig {
@@ -78,7 +85,13 @@ export const TEMPLATE = `{
 
   "_alert": "Command run the moment a cycle goes red and cannot be repaired. The summary arrives in $SCRAPE_HEAL_ALERT.",
   "onAlert": null,
-  "statePath": ".scrape-heal/state.json"
+  "statePath": ".scrape-heal/state.json",
+
+  "_llm": "Optional repair mode for when even the VALUES changed (no text to anchor on). Any OpenAI-compatible endpoint. Key via env: SCRAPE_HEAL_LLM_API_KEY.",
+  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null },
+
+  "_validator": "Optional: path to a JS file exporting a function (items, {config, baseline}) => {ok, itemCount, issues} that replaces the built-in shape checks.",
+  "validator": null
 }
 `;
 

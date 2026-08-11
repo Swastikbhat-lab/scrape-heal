@@ -3,9 +3,11 @@ import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import type { ScraperConfig } from './scraper.js';
+import type { ScraperConfig, Validator } from './scraper.js';
 import { runWatchdog } from './watchdog.js';
 import { commandRows, fileRows, type RowFetch } from './source.js';
+import { loadValidator } from './validator.js';
+import type { LLMOptions } from './llm.js';
 import {
   CONFIG_FILENAME, readConfigFile, fieldsFrom, initConfig, type WatchFileConfig,
 } from './config.js';
@@ -108,8 +110,10 @@ if (cycles !== undefined && (!Number.isFinite(cycles) || cycles <= 0)) {
 }
 const mutateEvery = args.has('mutate') ? Number(args.get('mutate')) : undefined;
 const mutateFlipEvery = args.has('mutate-flip') ? Number(args.get('mutate-flip')) : undefined;
-if (mutateEvery !== undefined && mutateFlipEvery !== undefined) {
-  console.error('use --mutate OR --mutate-flip, not both');
+const mutateValuesEvery = args.has('mutate-values') ? Number(args.get('mutate-values')) : undefined;
+const mutateModes = [mutateEvery, mutateFlipEvery, mutateValuesEvery].filter((m) => m !== undefined).length;
+if (mutateModes > 1) {
+  console.error('use only one of --mutate, --mutate-flip, --mutate-values');
   process.exit(2);
 }
 
@@ -125,6 +129,23 @@ if (isDemo) {
   await new Promise<void>((ok) => server!.listen(listenPort, '127.0.0.1', ok));
 }
 const port = server ? (server.address() as { port: number }).port : 0;
+
+// ---- mock LLM endpoint: serve a canned proposal so the LLM repair path can
+// be demoed and tested without an API key. `@path` reads a JSON file. --------
+const llmMock = args.get('llm-mock');
+let llmServer: ReturnType<typeof createServer> | null = null;
+if (llmMock) {
+  const canned = llmMock.startsWith('@')
+    ? readFileSync(fixture(llmMock.slice(1)), 'utf8')
+    : llmMock;
+  llmServer = createServer((req, res) => {
+    req.on('data', () => {}); // drain — the reply is canned regardless
+    req.on('end', () => {});
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: canned } }] }));
+  });
+  await new Promise<void>((ok) => llmServer!.listen(0, '127.0.0.1', ok));
+}
 
 // ---- the scraper config ------------------------------------------------------
 const fields = fieldsFrom(fileCfg.fields, undefined) ?? (args.get('fields') ?? 'name=.name,price=.price')
@@ -171,6 +192,16 @@ if (mutateEvery !== undefined) {
   }, mutateEvery * 1000);
 }
 
+// ---- values-change mode: the redesign also changed the data itself ---------
+// This is the case text matching cannot handle — nothing on the page equals a
+// known value. It exercises the LLM repair path (structure, not text).
+if (mutateValuesEvery !== undefined) {
+  setTimeout(() => {
+    copyFileSync(fixture('site-v3.html'), current);
+    console.log('  [mutate] the site redesigned AND the data changed — no known value survives');
+  }, mutateValuesEvery * 1000);
+}
+
 // ---- flip mode: the site toggles between markup versions every N seconds ---
 // The flip-flop is what the ledger exists for: after the first heal, a switch
 // back to known markup is a LEDGER HIT, not a re-heal.
@@ -193,10 +224,36 @@ const statePath = args.get('state') ?? fileCfg.statePath ?? DEFAULT_STATE;
 const writeConfigPath = args.get('write-config') ?? fileCfg.writeConfig;
 const onAlert = args.get('on-alert') ?? fileCfg.onAlert;
 
-console.log(`  watching ${config.url || '(rows source)'} every ${interval}s${cycles ? ` for ${cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}${mutateFlipEvery !== undefined ? `, markup flips every ${mutateFlipEvery}s` : ''}${fetchRows ? ' (rows from an external scraper)' : ''}`);
+// ---- LLM-assisted repair -----------------------------------------------------
+const llmApiKey = args.get('llm-api-key') ?? fileCfg.llm?.apiKey ?? process.env.SCRAPE_HEAL_LLM_API_KEY;
+const llmModel = args.get('llm-model') ?? fileCfg.llm?.model ?? process.env.SCRAPE_HEAL_LLM_MODEL;
+const llmBaseUrlArg =
+  args.get('llm-base-url') ?? fileCfg.llm?.baseUrl ?? process.env.SCRAPE_HEAL_LLM_BASE_URL;
+const llmBaseUrl = llmMock
+  ? `http://127.0.0.1:${(llmServer!.address() as { port: number }).port}/v1`
+  : llmBaseUrlArg;
+const llm: LLMOptions | undefined = llmMock || llmApiKey || llmBaseUrlArg || llmModel
+  ? { apiKey: llmApiKey ?? (llmMock ? 'mock-key' : undefined), baseUrl: llmBaseUrl, model: llmModel }
+  : undefined;
+
+// ---- pluggable validator -----------------------------------------------------
+const validatorPath = args.get('validator') ?? fileCfg.validator;
+let validator: Validator | undefined;
+if (validatorPath) {
+  try {
+    validator = await loadValidator(validatorPath);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(2);
+  }
+}
+
+console.log(`  watching ${config.url || '(rows source)'} every ${interval}s${cycles ? ` for ${cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}${mutateFlipEvery !== undefined ? `, markup flips every ${mutateFlipEvery}s` : ''}${mutateValuesEvery !== undefined ? `, site + data change every ${mutateValuesEvery}s` : ''}${fetchRows ? ' (rows from an external scraper)' : ''}`);
 if (filePath) console.log(`  config → ${filePath}`);
 console.log(`  state → ${statePath}`);
 if (onAlert) console.log('  alert hook armed');
+if (llm) console.log(`  llm repair armed — model ${llm.model ?? 'gpt-4o-mini'}${llmMock ? ' (mock endpoint, no API key needed)' : ''}`);
+if (validator) console.log(`  validator → ${validatorPath}`);
 if (fetchRows && !config.url) console.log('  detection only — set url to enable self-healing');
 console.log('');
 
@@ -210,9 +267,12 @@ const exitCode = await runWatchdog(browser, page, {
   onAlert,
   fetchRows,
   writeConfigPath,
+  llm,
+  validator,
   log: (line) => console.log(line),
 }, config);
 
 await browser.close();
 server?.close();
+llmServer?.close();
 process.exit(exitCode);

@@ -61,21 +61,22 @@ export interface Validation {
 }
 
 /**
- * Is the extraction good enough to trust?
- *
- * - the page yielded at least `minItems`
- * - no required field came back empty
- * - every identity value from the last known-good run is still present
- *
- * The last check is the one that turns "the selector returned *something*"
- * into "the selector returned the *same data*". A scraper that returns the
- * wrong-but-shaped data is the failure nobody notices.
+ * A pluggable validator: receives the extracted rows plus the config and the
+ * last good run, and decides whether they're good enough to trust. Replace the
+ * built-in shape checks with the schema you already own (JSON Schema, a DTO
+ * class, hand-written assertions) — the loop keeps the rest of its contract.
  */
-export function validate(
-  config: ScraperConfig,
+export type Validator = (
   items: ExtractedItem[],
-  baseline?: ExtractedItem[],
-): Validation {
+  ctx: { config: ScraperConfig; baseline: ExtractedItem[] },
+) => Validation;
+
+/**
+ * The shape half of validation — enough items, no empty fields. The parts
+ * that don't depend on the last good run. Used on its own when the baseline
+ * itself is known to be stale (an LLM repair after the data changed).
+ */
+export function validateShape(config: ScraperConfig, items: ExtractedItem[]): Validation {
   const issues: string[] = [];
 
   if (items.length < config.minItems) {
@@ -89,6 +90,36 @@ export function validate(
     }
   }
 
+  return { ok: issues.length === 0, itemCount: items.length, issues };
+}
+
+/**
+ * Is the extraction good enough to trust?
+ *
+ * When a pluggable validator is given, it replaces the built-in checks
+ * entirely — your schema decides.
+ *
+ * Otherwise:
+ *
+ * - the page yielded at least `minItems`
+ * - no required field came back empty
+ * - every identity value from the last known-good run is still present
+ *
+ * The last check is the one that turns "the selector returned *something*"
+ * into "the selector returned the *same data*". A scraper that returns the
+ * wrong-but-shaped data is the failure nobody notices.
+ */
+export function validate(
+  config: ScraperConfig,
+  items: ExtractedItem[],
+  baseline?: ExtractedItem[],
+  validator?: Validator,
+): Validation {
+  if (validator) return validator(items, { config, baseline: baseline ?? [] });
+
+  const shape = validateShape(config, items);
+  if (!shape.ok) return shape;
+
   if (baseline?.length) {
     const id = config.identityField;
     const want = new Set(baseline.map((b) => b[id] ?? '').filter(Boolean));
@@ -96,10 +127,11 @@ export function validate(
       const have = new Set(items.map((it) => it[id] ?? ''));
       const missing = [...want].filter((w) => !have.has(w));
       if (missing.length) {
-        issues.push(`missing known value(s): ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ', …' : ''}`);
+        shape.issues.push(`missing known value(s): ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ', …' : ''}`);
+        shape.ok = false;
       }
     }
   }
 
-  return { ok: issues.length === 0, itemCount: items.length, issues };
+  return shape;
 }

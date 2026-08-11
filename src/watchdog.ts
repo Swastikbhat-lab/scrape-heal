@@ -2,9 +2,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Browser, Page } from 'playwright';
-import type { ScraperConfig, ExtractedItem } from './scraper.js';
+import type { ScraperConfig, ExtractedItem, Validator } from './scraper.js';
 import { extract, validate } from './scraper.js';
 import { heal } from './heal.js';
+import type { LLMOptions } from './llm.js';
 import { playwrightRows, type RowFetch } from './source.js';
 
 export interface LedgerEntry {
@@ -45,6 +46,12 @@ export interface WatchOptions {
   /** When a repair is verified and shipped, also write the new selector
    *  config here (JSON) so any external scraper can read it back. */
   writeConfigPath?: string;
+  /** LLM-assisted repair, used only when the text healer finds no anchor
+   *  (the redesign changed the values too). The proposal still has to pass
+   *  the verify gate. */
+  llm?: LLMOptions;
+  /** Pluggable validator — replaces the built-in shape checks everywhere. */
+  validator?: Validator;
   log: (line: string) => void;
 }
 
@@ -108,6 +115,7 @@ function rememberLedger(state: WatchState, config: ScraperConfig, now: string): 
 async function tryLedger(
   browser: Browser,
   state: WatchState,
+  validator?: Validator,
 ): Promise<{ config: ScraperConfig; data: ExtractedItem[] } | null> {
   const currentSig = configSignature(state.config);
   for (const entry of state.ledger) {
@@ -115,7 +123,7 @@ async function tryLedger(
     const page = await browser.newPage();
     try {
       const items = await extract(entry.config, page);
-      const v = validate(entry.config, items, state.baseline);
+      const v = validate(entry.config, items, state.baseline, validator);
       if (v.ok) {
         entry.hits += 1;
         return { config: entry.config, data: items };
@@ -204,7 +212,7 @@ export async function runWatchdog(
       continue;
     }
 
-    const v = validate(config, items, state.baseline);
+    const v = validate(config, items, state.baseline, opts.validator);
 
     if (v.ok) {
       state.baseline = items;
@@ -244,7 +252,7 @@ export async function runWatchdog(
       // deploys, rollbacks) hits a previously-proven config before the healer
       // re-derives one from scratch. Same verify-then-ship gate — the memory
       // is what makes a flip cost nothing.
-      const remembered = await tryLedger(browser, state);
+      const remembered = await tryLedger(browser, state, opts.validator);
       if (remembered) {
         config = remembered.config;
         state.config = remembered.config;
@@ -262,7 +270,10 @@ export async function runWatchdog(
         );
         opts.log('  remembered config re-verified on the live page — shipped without re-healing');
       } else {
-        const result = await heal(browser, config, state.baseline);
+        const result = await heal(browser, config, state.baseline, {
+          llm: opts.llm,
+          validator: opts.validator,
+        });
         if (result.repaired && result.verified) {
           // The repaired config takes effect immediately — the next cycle must
           // not re-detect the same break against the stale selectors.
