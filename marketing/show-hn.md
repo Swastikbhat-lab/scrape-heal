@@ -1,9 +1,22 @@
 # Show HN: scrape-heal — a scraper that repairs its own selectors
 
-**Title:**
-Show HN: scrape-heal – a scraper that fixes its own broken selectors
+## How to post (30 seconds, needs your HN account)
 
-**Body:**
+1. Go to **https://news.ycombinator.com/submit** (logged in).
+2. **Title:** `Show HN: scrape-heal – a scraper that fixes its own broken selectors`
+3. **URL:** `https://github.com/Swastikbhat-lab/scrape-heal`
+4. Submit, then immediately add the body text below as the **first comment** on
+   your own post (that's how the story and the two questions ship).
+5. Post on a **weekday morning (US)** and stay in the thread for the first 2–3
+   hours — reply fast, the comment section is the product.
+
+Reply templates for the ten most likely comment types are pre-drafted in
+**`marketing/show-hn-replies.md`** — adapt each to the actual comment before
+posting.
+
+---
+
+## Body (first comment)
 
 My scraper broke at some point last month and I found out when a spreadsheet came
 back empty a week later. No error. The site just renamed a few classes in a redesign
@@ -13,7 +26,8 @@ So I built the thing I wished existed: a scraper loop that remembers what the da
 looked like, notices when it stops looking like that, and repairs its own selectors —
 but only after proving the repair on the live page.
 
-It's ~300 lines, MIT, and the demo is the whole pitch:
+It's small — ~1.2k lines of TypeScript, MIT, no dependencies beyond Playwright — and
+the demo is the whole pitch:
 
 ```
 STEP 1 — the site is healthy, the scraper works
