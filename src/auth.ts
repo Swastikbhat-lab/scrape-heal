@@ -84,7 +84,7 @@ export interface AuthHandle {
 export async function authenticate(
   browser: Browser,
   config: AuthConfig,
-  log: (line: string) => () => {},
+  log: (line: string) => void,
 ): Promise<AuthHandle> {
   if (config.kind === 'none' || !config.kind) {
     return { context: null, close: async () => {} };
@@ -267,8 +267,11 @@ async function loginAuth(
     return {
       context,
       close: async () => {
+        // This context was created here (fresh or from a saved session), so
+        // closing it is safe — unlike 'attach', where the context belongs to
+        // the user's own browser and close() only disconnects.
         await page.close();
-        // Don't close the context here — it's returned to the caller.
+        await context.close();
       },
     };
   } catch (err) {

@@ -1,12 +1,13 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
-import type { Browser, Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import type { ScraperConfig, ExtractedItem, Validator } from './scraper.js';
 import { extract, validate } from './scraper.js';
 import { heal, siteOrigin } from './heal.js';
 import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import { sendAlert, type AlertChannel } from './alert.js';
+import { authenticate, type AuthConfig, type AuthHandle } from './auth.js';
 import { captureEvidence, type CycleEvidence } from './evidence.js';
 import { playwrightRows, type RowFetch, type RowResult } from './source.js';
 import {
@@ -102,6 +103,13 @@ export interface WatchOptions {
    *  wrong binding, not a repair). On by default; skipped when a pluggable
    *  validator is set. */
   verifyTypes?: boolean;
+  /** v2→v3: Scrape pages behind a login. The authenticated context is
+   *  established once and held across every cycle — fetching, pagination,
+   *  visual fallback, the ledger, healing, and evidence capture all run
+   *  through it, so a login-walled page is treated like any other page. When
+   *  combined with a proxy pool, the session rides along into each
+   *  per-fetch proxy context. */
+  auth?: AuthConfig;
   log: (line: string) => void;
 }
 
@@ -257,11 +265,12 @@ async function tryLedger(
   browser: Browser,
   state: WatchState,
   validator?: Validator,
+  context?: BrowserContext,
 ): Promise<{ config: ScraperConfig; data: ExtractedItem[] } | null> {
   const currentSig = configSignature(state.config);
   for (const entry of state.ledger) {
     if (configSignature(entry.config) === currentSig) continue; // this one just failed
-    const page = await browser.newPage();
+    const page = context ? await context.newPage() : await browser.newPage();
     try {
       const extracted = await extract(entry.config, page);
       // A remembered config that now hits a block or a dead page is not a
@@ -299,10 +308,11 @@ async function captureFailureEvidence(
   targetKey: string,
   reason: string,
   status?: number,
+  context?: BrowserContext,
 ): Promise<CycleEvidence> {
   try {
     if (page.url() === 'about:blank' && url) {
-      const fresh = await browser.newPage();
+      const fresh = context ? await context.newPage() : await browser.newPage();
       try {
         await fresh.goto(url, { waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => {});
         return await captureEvidence(fresh, stateDir, targetKey, reason, status);
@@ -346,13 +356,18 @@ function proxyAwareFetch(
   getConfig: () => ScraperConfig,
   pool: ProxyPool,
   log: (line: string) => void,
+  authContext?: BrowserContext,
 ): RowFetch {
   let entry: ProxyEntry | null = null;
   return async () => {
     if (!entry) entry = pool.next();
+    // With auth, the session rides along: Playwright proxies are per-context,
+    // so each fresh fetch context re-applies the authenticated storage state
+    // (cookies/localStorage) on top of the current proxy.
+    const storageState = authContext ? await authContext.storageState() : undefined;
     const ctx = entry
-      ? await browser.newContext({ proxy: proxyLaunchOptions(entry.url) })
-      : await browser.newContext();
+      ? await browser.newContext({ proxy: proxyLaunchOptions(entry.url), ...(storageState ? { storageState } : {}) })
+      : await browser.newContext({ ...(storageState ? { storageState } : {}) });
     const page = await ctx.newPage();
     try {
       const result = await extract(getConfig(), page);
@@ -430,11 +445,35 @@ export async function runWatchdog(
   // Initialize proxy pool for anti-bot rotation.
   const proxyPool = opts.proxy ? new ProxyPool(opts.proxy) : null;
 
+  // Authenticated browsing — the session is established once and held across
+  // every cycle, so a page behind a login wall is scraped, healed, and
+  // evidenced like any other page. A misconfigured login is a hard stop:
+  // failing fast beats silently scraping an anonymous site for days.
+  let authHandle: AuthHandle | null = null;
+  let authPage: Page | null = null;
+  if (opts.auth) {
+    try {
+      authHandle = await authenticate(browser, opts.auth, opts.log);
+    } catch (err) {
+      opts.log(`auth failed: ${(err as Error).message} — target not scraped; fix the auth config and re-run.`);
+      return 1;
+    }
+    if (authHandle?.context) {
+      authPage = await authHandle.context.newPage();
+      opts.log(`  authenticated context held across cycles (${opts.auth.kind})`);
+    }
+  }
+  const authContext = authHandle?.context ?? undefined;
+  // Every page the loop touches comes from the authenticated context when one
+  // exists; otherwise the caller's page, as before.
+  const loopPage = authPage ?? page;
+
   // The default fetch is the browser. With a proxy pool configured, each
-  // fetch runs through the current proxy so a block rotates to the next one.
+  // fetch runs through the current proxy so a block rotates to the next one;
+  // with auth, the session rides along into each per-fetch context.
   const fetchRows = opts.fetchRows ?? (proxyPool
-    ? proxyAwareFetch(browser, () => config, proxyPool, opts.log)
-    : playwrightRows(page, () => config));
+    ? proxyAwareFetch(browser, () => config, proxyPool, opts.log, authContext)
+    : playwrightRows(loopPage, () => config));
 
   const maxFetchAttempts = opts.maxFetchAttempts ?? MAX_FETCH_ATTEMPTS;
 
@@ -489,8 +528,8 @@ export async function runWatchdog(
       opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       opts.log('');
       const evidence = await captureFailureEvidence(
-        browser, page, config.url, stateDir, targetKey,
-        cause, fetchResult.status,
+        browser, loopPage, config.url, stateDir, targetKey,
+        cause, fetchResult.status, authContext,
       );
       state.lastEvidence = evidence;
       if (evidence.screenshot) opts.log(`  evidence → ${evidence.screenshot}`);
@@ -527,7 +566,7 @@ export async function runWatchdog(
       opts.log(`  pagination enabled (${opts.pagination.kind}) — walking pages…`);
       try {
         const paged = await extractAllPages(
-          page, config.url,
+          loopPage, config.url,
           async () => (await fetchRows()).items ?? [],
           opts.pagination,
         );
@@ -542,9 +581,9 @@ export async function runWatchdog(
     if (items && items.length === 0 && config.url) {
       opts.log('  DOM extraction returned 0 items — trying visual grid detection…');
       try {
-        const grid = await detectGrid(page);
+        const grid = await detectGrid(loopPage);
         if (grid) {
-          items = await extractByGrid(page, grid, config.fields);
+          items = await extractByGrid(loopPage, grid, config.fields);
           opts.log(`  visual extraction: ${items.length} item(s) from a ${grid.rows}×${grid.cols} grid`);
         }
       } catch (err) {
@@ -638,7 +677,7 @@ export async function runWatchdog(
       // deploys, rollbacks) hits a previously-proven config before the healer
       // re-derives one from scratch. Same verify-then-ship gate — the memory
       // is what makes a flip cost nothing.
-      const remembered = await tryLedger(browser, state, opts.validator);
+      const remembered = await tryLedger(browser, state, opts.validator, authContext);
       if (remembered) {
         config = remembered.config;
         state.config = remembered.config;
@@ -662,6 +701,7 @@ export async function runWatchdog(
           validator: opts.validator,
           memory: state.llmMemory[siteKey],
           verifyTypes: opts.verifyTypes,
+          context: authContext,
         });
         if (result.memory) state.llmMemory[siteKey] = result.memory;
         if (result.repaired && result.verified) {
@@ -697,8 +737,8 @@ export async function runWatchdog(
           opts.log('');
           // The page is right there and broken — keep receipts.
           const evidence = await captureFailureEvidence(
-            browser, page, config.url, stateDir, targetKey,
-            `cycle ${cycle}: ${v.issues.join('; ')}`, undefined,
+            browser, loopPage, config.url, stateDir, targetKey,
+            `cycle ${cycle}: ${v.issues.join('; ')}`, undefined, authContext,
           );
           state.lastEvidence = evidence;
           if (evidence.screenshot) opts.log(`  evidence → ${evidence.screenshot}`);
@@ -714,6 +754,11 @@ export async function runWatchdog(
     await sleep(opts.intervalSeconds * 1000);
   }
 
+  // Release the authenticated session — the loop page first, then whatever
+  // the auth mode opened (profile context, login context; attach only
+  // disconnects, never closing the user's own browser).
+  if (authPage) await authPage.close();
+  if (authHandle) await authHandle.close();
   proxyPool?.dispose();
   return exitCode;
 }

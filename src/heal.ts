@@ -1,4 +1,4 @@
-import type { Browser, Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import type { ScraperConfig, ExtractedItem, FieldConfig, Validator } from './scraper.js';
 import { extract, validate, validateShape } from './scraper.js';
 import {
@@ -39,6 +39,13 @@ export interface HealOptions {
    * `validator` is given — your schema decides.
    */
   verifyTypes?: boolean;
+  /**
+   * Authenticated context (from `authenticate()`). When given, every page
+   * the repair opens — including the verify gate's re-extraction — comes
+   * from this context, so pages behind a login wall are healed like any
+   * other page instead of being seen as a broken anonymous site.
+   */
+  context?: BrowserContext;
 }
 
 /** The per-site key for LLM memory: the origin (scheme + host). */
@@ -131,6 +138,7 @@ export async function heal(
   const textResult = await healByText(browser, config, baseline, {
     validator: opts.validator,
     verifyTypes: opts.verifyTypes !== false,
+    context: opts.context,
   });
   if (textResult.repaired) return textResult;
 
@@ -150,14 +158,15 @@ async function healByText(
   browser: Browser,
   config: ScraperConfig,
   baseline: ExtractedItem[],
-  opts: { validator?: Validator; verifyTypes: boolean },
+  opts: { validator?: Validator; verifyTypes: boolean; context?: BrowserContext },
 ): Promise<HealResult> {
   const { validator } = opts;
+  const newPage = opts.context ? () => opts.context!.newPage() : () => browser.newPage();
   const attempts: string[] = [];
   const id = config.identityField;
   const known = [...new Set(baseline.map((b) => (b[id] ?? '').trim()).filter(Boolean))];
 
-  const page: Page = await browser.newPage();
+  const page: Page = await newPage();
   try {
     await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 });
 
@@ -228,7 +237,7 @@ async function healByText(
     attempts.push(
       `heal: verifying "${items}" + ${fields.map((f) => `${f.name}:"${f.selector}"`).join(', ')} on the live page…`,
     );
-    const check: Page = await browser.newPage();
+    const check: Page = await newPage();
     try {
       const extracted = await extract(candidate, check);
       if (extracted.failed) {
@@ -279,8 +288,9 @@ async function healByLLM(
   const site = siteOrigin(config.url);
   const maxAttempts = Math.max(1, Math.min(5, opts.llm?.maxAttempts ?? 3));
   const oldSig = JSON.stringify({ items: config.items, fields: config.fields, identityField: config.identityField });
+  const newPage = opts.context ? () => opts.context!.newPage() : () => browser.newPage();
 
-  const page: Page = await browser.newPage();
+  const page: Page = await newPage();
   try {
     await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 });
     const skeleton = await describeStructure(page);
@@ -290,10 +300,10 @@ async function healByLLM(
       `up to ${maxAttempts} attempt(s)).`,
     );
 
-    const history: { proposal?: HealProposal; failure: string }[] = [];
-    let memory: SiteLLMMemory | undefined = opts.memory;
+  const history: { proposal?: HealProposal; failure: string }[] = [];
+  let memory: SiteLLMMemory | undefined = opts.memory;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       let proposal: HealProposal;
       try {
         proposal = await proposeWithLLM({ config, baseline, skeleton, llm: opts.llm!, history, memory });
@@ -317,7 +327,7 @@ async function healByLLM(
       );
 
       // ---- the same gate: verify on the live page before shipping ---------
-      const check: Page = await browser.newPage();
+      const check: Page = await newPage();
       try {
         const extracted = await extract(candidate, check);
         if (extracted.failed) {

@@ -199,7 +199,7 @@ export const TEMPLATE = `{
     { "kind": "file", "path": "./data/products.jsonl" }
   ],
 
-  "_auth": "v2 Optional: scrape pages behind a login. attach connects to your signed-in browser via CDP; profile uses a persistent browser context (sign in once, scrape forever); login fills a form (credentials from SCRAPE_HEAL_AUTH_USER/PASS env vars — never stored in config).",
+  "_auth": "v3 Optional: scrape pages behind a login — the loop holds the authenticated context across cycles, so login-walled pages are scraped and healed like any other. attach connects to your signed-in browser via CDP; profile uses a persistent browser context (sign in once, scrape forever); login fills a form (credentials from SCRAPE_HEAL_AUTH_USER/PASS env vars — never stored in config).",
   "auth": { "kind": "attach", "cdp": "http://127.0.0.1:9222" },
 
   "_plugins": "v2 Optional: directory of plugin files (extractors, healers, transforms) loaded at startup. Each file exports a plugin object. Plugins are tried in registration order before the built-in logic.",

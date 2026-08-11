@@ -18,6 +18,7 @@ import {
   CONFIG_FILENAME, readConfigFile, fieldsFrom, initConfig, mergeTargetConfigs,
   type WatchFileConfig,
 } from './config.js';
+import type { AuthConfig } from './auth.js';
 
 /**
  * Watchdog mode: run the detect → heal → verify loop on a cadence.
@@ -174,7 +175,7 @@ interface WatchSpec {
   proxy?: { proxies?: string[]; providerUrl?: string };
   pagination?: { kind: string; selector?: string; pattern?: string; maxPages?: number };
   pipelines?: Record<string, unknown>[];
-  auth?: { kind: string; cdp?: string; dir?: string; loginUrl?: string; userSelector?: string; passSelector?: string; submitSelector?: string; sessionPath?: string };
+  auth?: AuthConfig;
   pluginsDir?: string;
   watch?: { enabled?: boolean; thresholds?: ChangeThreshold[] };
   verifyValueTypes?: boolean;
@@ -275,8 +276,8 @@ function watchFrom(
   const pipelines = cfg.pipelines ?? undefined;
 
   const authFlag = args.get('auth');
-  const auth = authFlag || cfg.auth ? {
-    kind: authFlag ?? cfg.auth?.kind ?? 'none',
+  const auth: AuthConfig | undefined = authFlag || cfg.auth ? {
+    kind: (authFlag ?? cfg.auth?.kind ?? 'none') as AuthConfig['kind'],
     cdp: args.get('auth-cdp') ?? cfg.auth?.cdp,
     dir: args.get('auth-dir') ?? cfg.auth?.dir,
     loginUrl: args.get('auth-login-url') ?? cfg.auth?.loginUrl,
@@ -402,6 +403,7 @@ if (targets.length > 0) {
       pipelines: s.pipelines as any,
       watch: s.watch,
       verifyTypes: s.verifyValueTypes,
+      auth: s.auth,
       log: (line) => console.log(`[${s.label}] ${line}`),
     }, s.config);
   }));
@@ -545,6 +547,7 @@ const exitCode = await runWatchdog(browser, page, {
   pipelines: spec.pipelines as any,
   watch: spec.watch,
   verifyTypes: spec.verifyValueTypes,
+  auth: spec.auth,
   log: (line) => console.log(line),
 }, spec.config);
 

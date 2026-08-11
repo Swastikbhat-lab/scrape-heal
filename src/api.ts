@@ -33,6 +33,7 @@ import { commandRows, fileRows, type RowFetch } from './source.js';
 import type { LLMOptions } from './llm.js';
 import type { AlertChannel } from './alert.js';
 import type { Validator } from './scraper.js';
+import type { AuthConfig } from './auth.js';
 import {
   CONFIG_FILENAME, readConfigFile, mergeTargetConfigs,
   type WatchFileConfig,
@@ -51,6 +52,9 @@ export interface ApiConfig {
   llm?: LLMOptions;
   /** Alert channels (webhooks pinged on red cycles). */
   alerts?: AlertChannel;
+  /** Auth config — the loop holds an authenticated context across cycles so
+   *  login-walled targets are scraped and healed like any other. */
+  auth?: AuthConfig;
 }
 
 interface TargetInfo {
@@ -148,6 +152,7 @@ export async function startApi(
       statePath,
       llm,
       alerts,
+      auth: config.auth,
       log: logFn,
     }, scraperConfig);
 
