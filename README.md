@@ -98,8 +98,9 @@ One config file, one command. Every key optional; CLI flags override the file wh
   "writeConfig": "scraper.config.json",    // repaired selectors, written back here
   "onAlert": null,                         // command run on an unhealable red cycle
   "statePath": ".scrape-heal/state.json",
-  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null },  // or env SCRAPE_HEAL_LLM_*
-  "validator": null                        // path to a JS file exporting your schema check
+  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null, "maxAttempts": 3 },  // or env SCRAPE_HEAL_LLM_*
+  "validator": null,                       // path to a JS file exporting your schema check
+  "targets": null                          // or: a fleet — see "Watch a fleet" below
 }
 ```
 
@@ -178,6 +179,13 @@ gone for real (the data changed), the gate verifies shape honestly — right cou
 — and says so in the log instead of pretending it verified the data. Propose with the model,
 **verify with the browser** — the split stays intact.
 
+**It learns from its misses.** A failed proposal — the verification issues plus the real
+selector-hit counts from the live page — is fed back and the model tries again, up to
+`llm.maxAttempts` (the repair budget, default 3). Every verified repair and every miss is
+remembered **per site** in state, so the next time the same site breaks, the model starts from
+what it already learned instead of from scratch — and it's told which proposals failed before,
+so it doesn't repeat them.
+
 ## Your schema, your rules (pluggable validators)
 
 The built-in checks are deliberately boring — enough items, no empty fields, same identities.
@@ -201,6 +209,35 @@ export default (items, { config, baseline }) => ({
 It replaces the built-in shape checks *everywhere* — healthy runs, ledger hits, and the repair
 verify gate — so your schema is what "good" means, not a second opinion.
 
+## Watch a fleet (multiple targets)
+
+One config file, many sites — the top-level keys are the defaults, `targets` overrides per site.
+Each target runs its own concurrent watchdog with its own selectors, cadence, repair budget,
+validator, and state file:
+
+```jsonc
+{
+  "intervalSeconds": 300,          // default for every target
+  "llm": { "model": "gpt-4o-mini" },
+  "targets": [
+    {
+      "url": "https://shop-a.example.com/products",
+      "fields": { "name": ".name", "price": ".price" },
+      "llm": { "maxAttempts": 5 }         // this site gets a bigger repair budget
+    },
+    {
+      "url": "https://shop-b.example.com/items",
+      "validator": "validator-b.js",       // its own schema
+      "intervalSeconds": 600                // its own cadence
+    }
+  ]
+}
+```
+
+`scrape-heal` runs one watchdog per target — a red run on any of them repairs or alerts
+independently, and the exit code is 1 if *any* target ended red. State lives per target
+(`.scrape-heal/<host:port>.json`), so healed configs and per-site LLM memory never cross wires.
+
 ## What it refuses to do
 
 - **Ship unverified repairs.** If the candidate doesn't re-extract the same data, you get a log
@@ -211,16 +248,19 @@ verify gate — so your schema is what "good" means, not a second opinion.
 
 ## What's next (honestly)
 
-Small by design — one machine, one target, one loop. Shipped so far: the detect → heal → verify
-loop, watchdog mode, the any-scraper row contract, the selector ledger for flip-flopping sites,
-LLM-assisted repair for when even the values change, and pluggable validators — all covered by
-the test suite, all green in CI. What this is *not*: a fleet manager, an anti-bot tool, or a
-multi-node production deployment. It is the 99% case, done well. The interesting next steps:
+Small by design — one machine, several targets, one loop. Shipped so far: the detect → heal →
+verify loop, watchdog mode, the any-scraper row contract, the selector ledger for flip-flopping
+sites, LLM-assisted repair for when even the values change (with a repair budget that learns
+from its own misses), pluggable validators, and multi-target watch from one config file — all
+covered by the test suite, all green in CI. What this is *not*: a fleet manager, an anti-bot
+tool, or a multi-node production deployment. It is the 99% case, done well. The interesting
+next steps:
 
-- **LLM repair that learns from its own misses** — feed the failed proposal plus the page it
-  failed on back to the model, so per-site selector-writing rules accumulate.
-- **Per-target config** — today LLM/validator options are global; a fleet of scrapers would each
-  want its own rules and its own repair budget.
+- **Fleet alerting, not just exit codes** — the loop can fail a scheduler; a Slack/email/webhook
+  pack would make N targets visible to humans the day they break.
+- **Learned-rule visibility** — the per-site LLM memory is inspectable in state; a
+  `scrape-heal --memory <site>` command (or a dashboard) would show what the loop has learned
+  and why it repairs the way it does.
 - **The anti-detection arms race** is real and this isn't that. This is about the 99% case: markup
   changed, data still there, nobody noticed.
 

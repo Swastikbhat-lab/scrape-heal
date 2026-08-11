@@ -50,7 +50,7 @@
     "demo:validator": "tsx src/cli.ts --demo --mutate 8 --interval 5 --cycles 6 --validator fixture/validator.js",
     "init": "tsx src/cli.ts --init",
     "watch": "tsx src/cli.ts",
-    "test": "tsx --test test/validate.test.ts test/parse.test.ts test/proposal.test.ts test/ledger.test.ts test/heal.test.ts",
+    "test": "tsx --test test/validate.test.ts test/parse.test.ts test/proposal.test.ts test/ledger.test.ts test/config.test.ts test/llm-memory.test.ts test/heal.test.ts",
     "typecheck": "tsc --noEmit",
     "make:gif": "node scripts/make-demo-gif.mjs",
     "make:gifs": "node scripts/make-demo-gif.mjs && node scripts/make-watchdog-gif.mjs"

@@ -4,8 +4,8 @@ import { spawn } from 'node:child_process';
 import type { Browser, Page } from 'playwright';
 import type { ScraperConfig, ExtractedItem, Validator } from './scraper.js';
 import { extract, validate } from './scraper.js';
-import { heal } from './heal.js';
-import type { LLMOptions } from './llm.js';
+import { heal, siteOrigin } from './heal.js';
+import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import { playwrightRows, type RowFetch } from './source.js';
 
 export interface LedgerEntry {
@@ -24,6 +24,9 @@ export interface WatchState {
   /** Previously-proven configs, newest first — the memory that makes a
    *  flip-flopping site cost nothing after the first heal. */
   ledger: LedgerEntry[];
+  /** Per-site LLM repair memory (successes + misses), keyed by site origin —
+   *  what the model has learned about this site's breakage patterns. */
+  llmMemory: Record<string, SiteLLMMemory>;
   lastStatus: 'healthy' | 'repaired' | 'red';
   lastCheckedAt: string;
   healedAt?: string;
@@ -62,8 +65,11 @@ export function loadState(statePath: string, config: ScraperConfig): WatchState 
       if (parsed.config && parsed.baseline) {
         return {
           ...parsed,
-          // tolerate state written before the ledger existed
+          // tolerate state written before the ledger/llmMemory existed
           ledger: Array.isArray(parsed.ledger) ? parsed.ledger : [],
+          llmMemory: parsed.llmMemory && typeof parsed.llmMemory === 'object'
+            ? parsed.llmMemory
+            : {},
         };
       }
     } catch {
@@ -74,6 +80,7 @@ export function loadState(statePath: string, config: ScraperConfig): WatchState 
     config,
     baseline: [],
     ledger: [],
+    llmMemory: {},
     lastStatus: 'healthy',
     lastCheckedAt: new Date().toISOString(),
     alertCount: 0,
@@ -179,6 +186,7 @@ export async function runWatchdog(
     state.config = configOverride;
     state.baseline = [];
     state.ledger = [];
+    state.llmMemory = {};
     state.alertCount = 0;
     state.lastStatus = 'healthy';
   }
@@ -271,10 +279,13 @@ export async function runWatchdog(
         );
         opts.log('  remembered config re-verified on the live page — shipped without re-healing');
       } else {
+        const siteKey = siteOrigin(config.url);
         const result = await heal(browser, config, state.baseline, {
           llm: opts.llm,
           validator: opts.validator,
+          memory: state.llmMemory[siteKey],
         });
+        if (result.memory) state.llmMemory[siteKey] = result.memory;
         if (result.repaired && result.verified) {
           // The repaired config takes effect immediately — the next cycle must
           // not re-detect the same break against the stale selectors.

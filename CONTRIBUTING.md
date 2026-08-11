@@ -33,13 +33,16 @@ genuinely needs a dependency, say so in the PR — don't sneak one in.
 ```
 src/
   scraper.ts     extract() / validate() / validateShape() — the detect half
-  heal.ts        heal() — text pass first, LLM fallback, one verify gate
-  llm.ts         structure skeleton + OpenAI-compatible proposal client
+  heal.ts        heal() — text pass first, LLM fallback with retry-on-failure
+                 and per-site memory, one verify gate
+  llm.ts         structure skeleton + OpenAI-compatible proposal client + the
+                 per-site repair memory (successes + misses)
   validator.ts   loadValidator() — pluggable schema files
   watchdog.ts    the loop: extract → validate → ledger → heal → alert
   source.ts      the any-scraper contract: rows from a command, file, or Playwright
-  config.ts      scraper.config.json parsing + template
-  cli.ts         the CLI: flags, demo fixture server, mock LLM endpoint
+  config.ts      scraper.config.json parsing + template + mergeTargetConfigs
+  cli.ts         the CLI: flags, demo fixture server, mock LLM endpoint,
+                 concurrent multi-target mode
   demo.ts        the 15-second story demo (npm run demo)
   demo-any.ts    same loop with a fetch+regex scraper (npm run demo:any)
 fixture/         site-v1/v2/v3.html (the redesigns), regex-scraper.mjs, validator.js

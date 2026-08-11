@@ -19,6 +19,7 @@ const freshState = (): WatchState => ({
   config: cfg('.product-card', '.name'),
   baseline: [],
   ledger: [],
+  llmMemory: {},
   lastStatus: 'healthy',
   lastCheckedAt: new Date().toISOString(),
   alertCount: 0,

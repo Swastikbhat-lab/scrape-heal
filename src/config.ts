@@ -33,10 +33,32 @@ export interface WatchFileConfig {
   /** LLM-assisted repair, used when even the values changed (no text anchor
    *  survives). Any OpenAI-compatible endpoint works. Prefer the env vars for
    *  the key: SCRAPE_HEAL_LLM_API_KEY / _MODEL / _BASE_URL. */
-  llm?: { apiKey?: string; model?: string; baseUrl?: string };
+  llm?: { apiKey?: string; model?: string; baseUrl?: string; maxAttempts?: number };
   /** Path to a JS file exporting a validator function that replaces the
    *  built-in shape checks. */
   validator?: string;
+  /** Multiple targets: each entry is its own watch config, merged over the
+   *  top-level keys as defaults. Each target gets its own selectors, cadence,
+   *  LLM config, validator, and state file — a fleet of scrapers, one config. */
+  targets?: WatchFileConfig[];
+}
+
+/**
+ * Merge a per-target config over the global defaults. Target values win;
+ * `llm` is deep-merged (a target can override just `maxAttempts`, say, and
+ * inherit the global key/model). `targets` itself never inherits.
+ */
+export function mergeTargetConfigs(
+  global: WatchFileConfig,
+  target: WatchFileConfig,
+): WatchFileConfig {
+  const { targets: _gTargets, ...globals } = global;
+  const { targets: _tTargets, ...t } = target;
+  const merged: WatchFileConfig = { ...globals, ...t };
+  if (global.llm || t.llm) {
+    merged.llm = { ...(global.llm ?? {}), ...(t.llm ?? {}) };
+  }
+  return merged;
 }
 
 export function readConfigFile(path: string): WatchFileConfig {
@@ -87,11 +109,28 @@ export const TEMPLATE = `{
   "onAlert": null,
   "statePath": ".scrape-heal/state.json",
 
-  "_llm": "Optional repair mode for when even the VALUES changed (no text to anchor on). Any OpenAI-compatible endpoint. Key via env: SCRAPE_HEAL_LLM_API_KEY.",
-  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null },
+  "_llm": "Optional repair mode for when even the VALUES changed (no text to anchor on). Any OpenAI-compatible endpoint. Key via env: SCRAPE_HEAL_LLM_API_KEY. maxAttempts = the repair budget (propose→verify tries before giving up).",
+  "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null, "maxAttempts": 3 },
 
   "_validator": "Optional: path to a JS file exporting a function (items, {config, baseline}) => {ok, itemCount, issues} that replaces the built-in shape checks.",
-  "validator": null
+  "validator": null,
+
+  "_targets": "Optional: watch a fleet. Each entry is its own target; the top-level keys above are its defaults. Each target gets its own selectors, cadence, llm, validator, and state file. Delete the single-target keys above when using targets.",
+  "targets": [
+    {
+      "url": "https://shop-a.example.com/products",
+      "items": ".product-card",
+      "fields": { "name": ".name", "price": ".price" },
+      "intervalSeconds": 300,
+      "llm": { "maxAttempts": 5 }
+    },
+    {
+      "url": "https://shop-b.example.com/items",
+      "rowsFrom": null,
+      "validator": "validator-b.js",
+      "intervalSeconds": 600
+    }
+  ]
 }
 `;
 

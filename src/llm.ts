@@ -14,11 +14,68 @@ export interface LLMOptions {
   /** e.g. https://api.openai.com/v1 (default), https://openrouter.ai/api/v1, http://localhost:11434/v1 */
   baseUrl?: string;
   model?: string;
+  /** Repair budget: how many propose → verify attempts before giving up
+   *  (default 3, max 5). A failed attempt's feedback is fed back each time. */
+  maxAttempts?: number;
 }
 
 export interface HealProposal {
   items: string;
   fields: Record<string, string>;
+}
+
+/** One remembered, verified repair for a site — the loop's "this is how this
+ *  site breaks" knowledge, carried into future heal sessions. */
+export interface LLMSuccess {
+  /** ISO time the repair was verified and shipped. */
+  at: string;
+  /** Selector signature of the config that was broken (items + fields). */
+  old: string;
+  proposal: HealProposal;
+}
+
+/**
+ * Per-site LLM repair memory, persisted in watchdog state. Successes prime
+ * future prompts (the site has broken this way before); misses are proposals
+ * that failed verification, so the model doesn't repeat them.
+ */
+export interface SiteLLMMemory {
+  /** Site origin the memory applies to. */
+  site: string;
+  /** Verified repairs, newest first, capped. */
+  successes: LLMSuccess[];
+  /** Failed proposals (as one-line summaries), newest first, capped. */
+  misses: string[];
+}
+
+const SUCCESS_CAP = 3;
+const MISS_CAP = 5;
+
+/**
+ * Fold one heal outcome into the per-site memory (new object; does not mutate
+ * the previous one). Successes are deduped by proposal and capped; misses are
+ * deduped one-line summaries, capped.
+ */
+export function rememberLLM(
+  prev: SiteLLMMemory | undefined,
+  outcome: { at: string; oldSig: string; ok: boolean; proposal?: HealProposal; failure?: string },
+): SiteLLMMemory {
+  const base: SiteLLMMemory = prev ?? { site: '', successes: [], misses: [] };
+  if (outcome.ok && outcome.proposal) {
+    const successes = [
+      { at: outcome.at, old: outcome.oldSig, proposal: outcome.proposal },
+      ...base.successes.filter(
+        (s) => JSON.stringify(s.proposal) !== JSON.stringify(outcome.proposal),
+      ),
+    ].slice(0, SUCCESS_CAP);
+    return { ...base, successes };
+  }
+  if (outcome.failure) {
+    const entry = `${outcome.oldSig} → ${JSON.stringify(outcome.proposal ?? 'invalid reply')} — ${outcome.failure}`;
+    const misses = [entry, ...base.misses.filter((m) => m !== entry)].slice(0, MISS_CAP);
+    return { ...base, misses };
+  }
+  return base;
 }
 
 export interface SkeletonNode {
@@ -69,6 +126,11 @@ export interface ProposeInput {
   baseline: ExtractedItem[];
   skeleton: SkeletonNode[];
   llm: LLMOptions;
+  /** Failed proposals from earlier attempts in this session, with the
+   *  verification feedback — so the model can correct itself. */
+  history?: { proposal?: HealProposal; failure: string }[];
+  /** Per-site memory from previous heal sessions (successes + misses). */
+  memory?: SiteLLMMemory;
 }
 
 /**
@@ -76,7 +138,9 @@ export interface ProposeInput {
  *
  * The proposal is just a proposal: the caller re-extracts with it and only
  * ships it if the verify gate passes. Propose with the model, verify with the
- * browser — that split is the whole design.
+ * browser — that split is the whole design. Failures are fed back through
+ * `history`, and per-site `memory` accumulates across sessions, so the model
+ * learns from its own misses.
  */
 export async function proposeWithLLM(input: ProposeInput): Promise<HealProposal> {
   const { llm } = input;
@@ -144,7 +208,7 @@ export function parseProposal(content: string): HealProposal {
 
 function buildPrompt(input: ProposeInput): string {
   const { config, baseline, skeleton } = input;
-  return [
+  const parts = [
     'You are fixing CSS selectors for a web scraper after a site redesign.',
     'The old selectors stopped matching — and worse, the VALUES on the page changed too,',
     'so nothing can be found by text. Infer intent from structure, not text.',
@@ -166,5 +230,35 @@ function buildPrompt(input: ProposeInput): string {
     'Reuse surviving classes where possible; prefer classes over structural position.',
     'Reply with ONLY a JSON object, no prose, no markdown fences:',
     '{"items": "<container selector>", "fields": {"<field name>": "<selector>"}}',
-  ].join('\n');
+  ];
+
+  if (input.memory) {
+    const mem = ['', 'REMEMBERED CONTEXT FOR THIS SITE (from previous heal sessions):'];
+    if (input.memory.successes.length) {
+      mem.push('Verified repairs this site has had before — the site has broken this way once; it can again:');
+      for (const s of input.memory.successes) {
+        mem.push(`- at ${s.at}: old ${s.old} → new ${JSON.stringify(s.proposal)}`);
+      }
+    } else {
+      mem.push('(no verified repairs remembered yet)');
+    }
+    if (input.memory.misses.length) {
+      mem.push('Proposals that FAILED verification before — do not repeat them:');
+      for (const m of input.memory.misses) mem.push(`- ${m}`);
+    }
+    parts.push(mem.join('\n'));
+  }
+
+  if (input.history?.length) {
+    const hist = [
+      '',
+      'YOUR PREVIOUS ATTEMPTS IN THIS SESSION FAILED — the browser rejected these proposals. Learn from them and correct:',
+      ...input.history.map(
+        (h) => `- proposed ${JSON.stringify(h.proposal ?? 'invalid reply')} — failure: ${h.failure}`,
+      ),
+    ];
+    parts.push(hist.join('\n'));
+  }
+
+  return parts.join('\n');
 }

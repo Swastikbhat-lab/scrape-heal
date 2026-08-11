@@ -1,7 +1,10 @@
 import type { Browser, Page } from 'playwright';
 import type { ScraperConfig, ExtractedItem, FieldConfig, Validator } from './scraper.js';
 import { extract, validate, validateShape } from './scraper.js';
-import { describeStructure, proposeWithLLM, type LLMOptions } from './llm.js';
+import {
+  describeStructure, proposeWithLLM, rememberLLM,
+  type HealProposal, type LLMOptions, type SiteLLMMemory,
+} from './llm.js';
 
 export interface HealResult {
   repaired: boolean;
@@ -11,6 +14,8 @@ export interface HealResult {
   config: ScraperConfig;
   /** What the repaired config extracted, verified against the live page. */
   verified: ExtractedItem[] | null;
+  /** Updated per-site LLM memory after this heal — persist it for the next. */
+  memory?: SiteLLMMemory;
 }
 
 export interface HealOptions {
@@ -23,6 +28,17 @@ export interface HealOptions {
   llm?: LLMOptions;
   /** Pluggable validator — replaces the built-in shape checks everywhere. */
   validator?: Validator;
+  /** Per-site LLM memory from previous heal sessions (successes + misses). */
+  memory?: SiteLLMMemory;
+}
+
+/** The per-site key for LLM memory: the origin (scheme + host). */
+export function siteOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
 
 interface Match {
@@ -223,7 +239,13 @@ async function healByText(
  * The fallback pass: the data itself changed, so structure must carry intent.
  * The model sees a compact skeleton of the live page (with the *new* values as
  * text samples) plus the old config and its last-good data, and proposes where
- * each field now lives. The proposal is still verified against the live page.
+ * each field now lives.
+ *
+ * The loop learns from its misses: up to `maxAttempts` proposals are tried,
+ * and every failure — the verification issues plus the real selector-hit
+ * counts from the live page — is fed back for the next attempt. Successes and
+ * misses are folded into the per-site memory, so the next time this site
+ * breaks, the model starts from what it already learned.
  */
 async function healByLLM(
   browser: Browser,
@@ -233,6 +255,9 @@ async function healByLLM(
 ): Promise<HealResult> {
   const attempts: string[] = [];
   const id = config.identityField;
+  const site = siteOrigin(config.url);
+  const maxAttempts = Math.max(1, Math.min(5, opts.llm?.maxAttempts ?? 3));
+  const oldSig = JSON.stringify({ items: config.items, fields: config.fields, identityField: config.identityField });
 
   const page: Page = await browser.newPage();
   try {
@@ -240,57 +265,91 @@ async function healByLLM(
     const skeleton = await describeStructure(page);
     attempts.push(
       `heal-llm: no text anchor survived — the data itself changed. Asking the model ` +
-      `to map the old fields onto the new structure (${skeleton.length} nodes sampled).`,
+      `to map the old fields onto the new structure (${skeleton.length} nodes sampled, ` +
+      `up to ${maxAttempts} attempt(s)).`,
     );
 
-    const proposal = await proposeWithLLM({ config, baseline, skeleton, llm: opts.llm! });
-    const fields: FieldConfig[] = config.fields.map((f) => ({
-      name: f.name,
-      selector: proposal.fields[f.name] ?? f.selector,
-    }));
-    const candidate: ScraperConfig = { ...config, items: proposal.items, fields };
-    attempts.push(
-      `heal-llm: proposal — items "${proposal.items}", ` +
-      fields.map((f) => `${f.name}:"${f.selector}"`).join(', '),
-    );
+    const history: { proposal?: HealProposal; failure: string }[] = [];
+    let memory: SiteLLMMemory | undefined = opts.memory;
 
-    // ---- the same gate: verify on the live page before shipping -----------
-    attempts.push(`heal-llm: verifying "${candidate.items}" on the live page…`);
-    const check: Page = await browser.newPage();
-    try {
-      const extracted = await extract(candidate, check);
-
-      // Did the *values* really change, or did the model just find a better
-      // path to the same data? If the known identities survive, demand them.
-      const want = new Set(baseline.map((b) => (b[id] ?? '').trim()).filter(Boolean));
-      const have = new Set(extracted.map((it) => (it[id] ?? '').trim()));
-      const missing = [...want].filter((w) => !have.has(w));
-
-      const gate = opts.validator
-        ? opts.validator(extracted, { config: candidate, baseline })
-        : validateShape(candidate, extracted);
-      if (!gate.ok) {
-        attempts.push(`heal-llm: FAIL — ${gate.issues.join('; ')}. Nothing shipped.`);
-        return { repaired: false, attempts, config, verified: null };
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let proposal: HealProposal;
+      try {
+        proposal = await proposeWithLLM({ config, baseline, skeleton, llm: opts.llm!, history, memory });
+      } catch (err) {
+        const msg = (err as Error).message;
+        attempts.push(`heal-llm: attempt ${attempt} — the model's reply was unusable: ${msg}`);
+        history.push({ failure: msg });
+        memory = rememberLLM(memory, { at: new Date().toISOString(), oldSig, ok: false, failure: msg });
+        continue;
       }
 
-      if (missing.length === 0) {
-        attempts.push(
-          `heal-llm: PASS — ${extracted.length} item(s), every known "${id}" still present. Shipping the repair.`,
-        );
-      } else {
-        attempts.push(
-          `heal-llm: PASS — ${extracted.length} item(s). The old "${id}" values are gone (the data changed), ` +
-          'so verification is shape-only: correct count, no empty fields. Shipping the repair.',
-        );
+      const fields: FieldConfig[] = config.fields.map((f) => ({
+        name: f.name,
+        selector: proposal.fields[f.name] ?? f.selector,
+      }));
+      const candidate: ScraperConfig = { ...config, items: proposal.items, fields };
+      attempts.push(
+        `heal-llm: attempt ${attempt} — proposal items "${proposal.items}", ` +
+        fields.map((f) => `${f.name}:"${f.selector}"`).join(', '),
+      );
+
+      // ---- the same gate: verify on the live page before shipping ---------
+      const check: Page = await browser.newPage();
+      try {
+        const extracted = await extract(candidate, check);
+
+        // Did the *values* really change, or did the model just find a better
+        // path to the same data? If the known identities survive, demand them.
+        const want = new Set(baseline.map((b) => (b[id] ?? '').trim()).filter(Boolean));
+        const have = new Set(extracted.map((it) => (it[id] ?? '').trim()));
+        const missing = [...want].filter((w) => !have.has(w));
+
+        const gate = opts.validator
+          ? opts.validator(extracted, { config: candidate, baseline })
+          : validateShape(candidate, extracted);
+        if (gate.ok) {
+          const detail = missing.length === 0
+            ? `${extracted.length} item(s), every known "${id}" still present`
+            : `${extracted.length} item(s); the old "${id}" values are gone (the data changed), ` +
+              'verification is shape-only: correct count, no empty fields';
+          attempts.push(`heal-llm: attempt ${attempt} PASS — ${detail}. Shipping the repair.`);
+          memory = rememberLLM(memory, { at: new Date().toISOString(), oldSig, ok: true, proposal });
+          memory.site = site;
+          return { repaired: true, attempts, config: candidate, verified: extracted, memory };
+        }
+
+        // Failure feedback: the verification issues plus real selector-hit
+        // counts from the live page — the model's next proposal sees exactly
+        // what it got wrong and by how much.
+        const itemsCount = await check.locator(candidate.items).count();
+        const fieldHits: string[] = [];
+        for (const f of candidate.fields) {
+          const globalN = await check.locator(f.selector).count();
+          const innerN = itemsCount > 0
+            ? await check.locator(candidate.items).first().locator(f.selector).count()
+            : 0;
+          fieldHits.push(`"${f.selector}" → ${globalN} on page${itemsCount > 0 ? `, ${innerN} inside first item` : ''}`);
+        }
+        const failure = `${gate.issues.join('; ')}. Selector hits: items "${candidate.items}" → ${itemsCount}; ${fieldHits.join('; ')}`;
+        attempts.push(`heal-llm: attempt ${attempt} FAILED — ${failure}`);
+        history.push({ proposal, failure });
+        memory = rememberLLM(memory, { at: new Date().toISOString(), oldSig, ok: false, proposal, failure });
+        memory.site = site;
+      } finally {
+        await check.close();
       }
-      return { repaired: true, attempts, config: candidate, verified: extracted };
-    } finally {
-      await check.close();
+
+      if (attempt < maxAttempts) {
+        attempts.push(`heal-llm: feeding that failure back and retrying (attempt ${attempt + 1}/${maxAttempts})…`);
+      }
     }
+
+    attempts.push(`heal-llm: gave up after ${maxAttempts} attempt(s) — nothing shipped.`);
+    return { repaired: false, attempts, config, verified: null, memory };
   } catch (err) {
     attempts.push(`heal-llm: error — ${(err as Error).message}. Nothing shipped.`);
-    return { repaired: false, attempts, config, verified: null };
+    return { repaired: false, attempts, config, verified: null, memory: opts.memory };
   } finally {
     await page.close();
   }

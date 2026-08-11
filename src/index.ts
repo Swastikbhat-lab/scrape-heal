@@ -36,8 +36,8 @@ export { heal } from './heal.js';
 export type { WatchOptions, WatchState, LedgerEntry } from './watchdog.js';
 export { runWatchdog, loadState } from './watchdog.js';
 
-export type { LLMOptions, HealProposal, SkeletonNode } from './llm.js';
-export { describeStructure, proposeWithLLM, parseProposal } from './llm.js';
+export type { LLMOptions, HealProposal, SkeletonNode, SiteLLMMemory, LLMSuccess } from './llm.js';
+export { describeStructure, proposeWithLLM, parseProposal, rememberLLM } from './llm.js';
 
 export { loadValidator } from './validator.js';
 
@@ -45,4 +45,6 @@ export type { RowFetch } from './source.js';
 export { playwrightRows, commandRows, fileRows, parseRows } from './source.js';
 
 export type { WatchFileConfig } from './config.js';
-export { readConfigFile, fieldsFrom, initConfig, TEMPLATE, CONFIG_FILENAME } from './config.js';
+export {
+  readConfigFile, fieldsFrom, initConfig, mergeTargetConfigs, TEMPLATE, CONFIG_FILENAME,
+} from './config.js';

@@ -49,6 +49,32 @@ function startMockLLM(content: string) {
   });
 }
 
+/**
+ * Like startMockLLM but serves canned contents in order (last one repeats) and
+ * records every request body — so tests can prove the feedback loop retried
+ * with a different proposal and that memory primed the next prompt.
+ */
+function startMockLLMSequence(contents: string[], bodies: string[] = []) {
+  let i = 0;
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      bodies.push(body);
+      const content = contents[Math.min(i, contents.length - 1)];
+      i++;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  });
+  return new Promise<{ baseUrl: string; close: () => void; bodies: string[] }>((ok) => {
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as { port: number }).port;
+      ok({ baseUrl: `http://127.0.0.1:${port}/v1`, close: () => server.close(), bodies });
+    });
+  });
+}
+
 const config: ScraperConfig = {
   url: '', // set per test
   items: '.product-card',
@@ -112,7 +138,7 @@ test('heal: LLM path repairs when the data itself changed (no text anchor)', asy
     assert.equal(result.config.items, '.tile');
     assert.ok(result.verified && result.verified.length === 4);
     assert.ok(
-      result.attempts.some((a) => a.includes('heal-llm: PASS')),
+      result.attempts.some((a) => a.includes('heal-llm: attempt 1 PASS')),
       'expected the LLM pass to be logged',
     );
   } finally {
@@ -138,7 +164,98 @@ test('heal: LLM path refuses a proposal that does not extract the right shape', 
     assert.equal(result.repaired, false);
     assert.equal(result.verified, null);
     assert.equal(result.config.items, '.product-card'); // nothing shipped
-    assert.ok(result.attempts.some((a) => a.includes('heal-llm: FAIL')));
+    assert.ok(result.attempts.some((a) => a.includes('heal-llm: attempt 1 FAILED')));
+  } finally {
+    mock.close();
+  }
+});
+
+test('heal: LLM repair learns from a failed proposal and succeeds on retry', async () => {
+  site.serve('site-v1.html');
+  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+
+  site.serve('site-v3.html');
+  const mock = await startMockLLMSequence([
+    '{"items":".nope","fields":{"name":".title","price":".cost"}}',
+    '{"items":".tile","fields":{"name":".title","price":".cost"}}',
+  ]);
+  try {
+    const result = await heal(
+      browser,
+      { ...config, url: site.url },
+      baseline,
+      { llm: { baseUrl: mock.baseUrl } },
+    );
+    assert.equal(result.repaired, true);
+    assert.equal(result.config.items, '.tile');
+    // The failure was fed back before the retry succeeded.
+    assert.ok(result.attempts.some((a) => a.includes('attempt 1 FAILED')));
+    assert.ok(result.attempts.some((a) => a.includes('feeding that failure back')));
+    // The site memory recorded the success and the miss.
+    assert.ok(result.memory, 'heal should return updated per-site memory');
+    assert.equal(result.memory!.successes.length, 1);
+    assert.ok(result.memory!.misses.some((m) => m.includes('.nope')));
+  } finally {
+    mock.close();
+  }
+});
+
+test('heal: LLM repair gives up after the repair budget and records every miss', async () => {
+  site.serve('site-v1.html');
+  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+
+  site.serve('site-v3.html');
+  const mock = await startMockLLMSequence([
+    '{"items":".nope","fields":{"name":".title","price":".cost"}}',
+    '{"items":".nada","fields":{"name":".title","price":".cost"}}',
+  ]);
+  try {
+    const result = await heal(
+      browser,
+      { ...config, url: site.url },
+      baseline,
+      { llm: { baseUrl: mock.baseUrl, maxAttempts: 2 } },
+    );
+    assert.equal(result.repaired, false);
+    assert.equal(result.verified, null);
+    assert.ok(result.attempts.some((a) => a.includes('gave up after 2 attempt(s)')));
+    assert.equal(result.memory!.misses.length, 2);
+  } finally {
+    mock.close();
+  }
+});
+
+test('heal: per-site memory from a previous session primes the next prompt', async () => {
+  site.serve('site-v1.html');
+  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+
+  site.serve('site-v3.html');
+  const bodies: string[] = [];
+  const mock = await startMockLLMSequence(
+    ['{"items":".tile","fields":{"name":".title","price":".cost"}}'],
+    bodies,
+  );
+  try {
+    const first = await heal(
+      browser,
+      { ...config, url: site.url },
+      baseline,
+      { llm: { baseUrl: mock.baseUrl } },
+    );
+    assert.equal(first.repaired, true);
+    assert.ok(first.memory && first.memory.successes.length === 1);
+
+    // Same site, memory carried over — the next prompt must show it.
+    const second = await heal(
+      browser,
+      { ...config, url: site.url },
+      baseline,
+      { llm: { baseUrl: mock.baseUrl }, memory: first.memory },
+    );
+    assert.equal(second.repaired, true);
+    const prompt = bodies[bodies.length - 1] ?? '';
+    assert.ok(prompt.includes('REMEMBERED CONTEXT FOR THIS SITE'), 'prompt should carry per-site memory');
+    assert.ok(prompt.includes('.tile'), 'prompt should include the remembered proposal');
   } finally {
     mock.close();
   }
