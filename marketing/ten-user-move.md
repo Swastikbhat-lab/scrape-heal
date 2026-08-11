@@ -4,10 +4,25 @@ Goal: ten real conversations with people whose scraper has broken. Reply in-thre
 (not DMs first), answer their actual question, mention the tool only where it
 naturally fits, and end with a real question. Do not link-dump.
 
-> ⚠️ Reddit's API blocked this machine, so permalinks come from search results —
-> click each link before posting to confirm it's still live and read the thread's
-> actual details (OP names, exact symptoms) before sending. Every draft below is
-> written from the snippet, so adjust the specifics to what you actually find.
+## Verified status (checked 2026-08-10)
+
+Every link below was re-verified against search indexes before this pass. Reddit's
+API is blocked from this machine, so permalinks come from Google's index — click
+each one before posting, and read the thread's real details (OP names, exact
+symptoms) before sending.
+
+| # | Where | Thread | Status |
+|---|-------|--------|--------|
+| 1 | r/WebScrapingInsider | ["What is the hardest part of scraping in 2026 for you?"](https://www.reddit.com/r/WebScrapingInsider/comments/1tp3wj8/) | ✅ live, May 27 2026 |
+| 2 | r/AI_Agents | ["What are people actually using for web scraping that doesn't break"](https://www.reddit.com/r/AI_Agents/comments/1qjkotq/) | ✅ live, Jan 22 2026 — active (63↑ / 69 comments) |
+| 3 | r/webscraping | ["Scraping ebay"](https://www.reddit.com/r/webscraping/comments/1uzf54q/) | ✅ live, Jul 18 2026 |
+| 4 | r/WebScrapingInsider | ["What's a sane way to scrape a few pages in 2026?"](https://www.reddit.com/r/WebScrapingInsider/comments/1r2ly2s/) | ✅ live, Feb 12 2026 |
+| 5 | r/tinyMediaManager | ["Scraping from IMDB seems to have stopped working"](https://www.reddit.com/r/tinyMediaManager/comments/1qjqiql/) | ✅ live, Jan 22 2026 — **real cause is IMDb's WAF, not markup** (draft rewritten) |
+| 6 | r/DataHoarder | [Epstein files archive thread](https://www.reddit.com/r/DataHoarder/comments/1qrd9ma/) | ✅ live, Jan 31 2026 — huge (1.9K↑ / 432 comments); keep reply brief and measured |
+| 7 | r/webscraping | ["How do you monitor your scrapers?"](https://www.reddit.com/r/webscraping/comments/1ser5eo/) | ✅ live, Apr 7 2026 — **replaces the 2023 lazy-load thread, which is no longer indexed** |
+| 8 | HN Show HN | [Goldseam — heal broken Cypress selectors with a local LLM](https://news.ycombinator.com/item?id=48796042) | ✅ live, Jul 5 2026 — **0 comments, 2 points: be the first comment** |
+| 9 | r/WebScrapingInsider | ["What Are the Best AI Web Scraping Tools in 2026?"](https://www.reddit.com/r/WebScrapingInsider/comments/1stguri/) | ✅ live, Apr 23 2026 — OP is running a comparative study |
+| 10 | r/webscraping | ["Scraping websites using regex"](https://www.reddit.com/r/webscraping/comments/1h5mgva/) | ✅ live, Dec 3 2024 |
 
 ---
 
@@ -42,9 +57,8 @@ but don't match reality." That sentence *is* the product.
 ## 2. r/AI_Agents — "What are people actually using for web scraping that doesn't break"
 **2026-01-22** — https://www.reddit.com/r/AI_Agents/comments/1qjkotq/
 
-*Why:* a thread whose title is literally the problem. One vendor comment claims
-their R&D team patches scrapers silently — good contrast: we ship only verified
-repairs.
+*Why:* a thread whose title is literally the problem, and it's an active one
+(63 upvotes, 69 comments) — the conversation is still alive, replies get seen.
 
 **Draft:**
 > Nothing "doesn't break" — that's the honest answer. Sites change, and any
@@ -68,8 +82,9 @@ repairs.
 ## 3. r/webscraping — "Scraping ebay"
 **2026-07-18** — https://www.reddit.com/r/webscraping/comments/1uzf54q/
 
-*Why:* recent, live breakage. "eBay's frontend changed recently... scraping via
-proxies stopped working" — a real, current "the site changed" report.
+*Why:* recent, live breakage. "What happened to eBay's frontend recently?
+Somehow, scraping via proxies has stopped working whereas my home residential IP
+is…" — a real, current "the site changed" report.
 
 **Draft:**
 > If eBay changed their frontend, that's very likely a selector/markup break, not
@@ -117,28 +132,28 @@ boring advice + the one thing nobody tells beginners (validation).
 ## 5. r/tinyMediaManager — "Scraping from IMDB seems to have stopped working"
 **2026-01-22** — https://www.reddit.com/r/tinyMediaManager/comments/1qjqiql/
 
-*Why:* a recent, popular "my scraper stopped working" thread. Media metadata
-scrapers break constantly because IMDB tweaks markup. The answer is honest (TMM
-side), but the *pattern* is the product.
+*Why:* a recent, popular "my scraper stopped working" thread — and a chance to
+show the tool's honest limits. **The real cause here is IMDb's WAF (JS
+challenge/response), not a markup change** — so the reply teaches the
+loud-vs-silent distinction instead of forcing the link.
 
 **Draft:**
-> Classic silent breakage: IMDB tweaks their markup, the scraper doesn't error,
-> it just returns nothing, and everyone assumes it's their setup. TVDB/TMDB
-> still working is a good hint it's site-specific, not network-wide.
+> This is the *loud* kind of breakage: IMDb switched on their web-application
+> firewall, so scrapers hit a challenge/response JS page instead of data. You
+> can see it happening, and several people have confirmed that switching "Search
+> with" from IMDb to TMDb restores scraping until it's sorted.
 >
-> For TMM specifically there's not much you can do but wait for an update — the
-> fix is on their side. But this exact pattern is worth internalizing for any
-> scraper you run yourself: sites change markup constantly, and "it stopped
-> returning data" with no error is the #1 failure mode. The fix is to validate
-> the *shape* of what you extract, every run, against the last good one — then a
-> site change is detectable the day it happens.
+> Worth separating the two failure modes because they need different fixes:
+> anti-bot (WAF/Cloudflare) is about solving the challenge or switching sources —
+> no selector fix helps. The other kind is *silent* markup change: the page
+> loads fine, the data is there, but the class names moved, so the scraper
+> returns nothing and you find out a week later. That second one is worth
+> automating — validate the shape of every run against the last good one and you
+> catch it the day it happens (I built a small loop for it:
+> https://github.com/Swastikbhat-lab/scrape-heal).
 >
-> I built an open-source loop that does exactly that (detects the change, and
-> repairs the selectors after re-verifying on the live page):
-> https://github.com/Swastikbhat-lab/scrape-heal
->
-> Out of curiosity — did the IMDB scrape fail with an error, or just return
-> empty metadata?
+> Did the failure show as a challenge page, or just empty metadata? That tells
+> you which of the two you're dealing with.
 
 ---
 
@@ -148,12 +163,14 @@ side), but the *pattern* is the product.
 *Why:* a real silent-breakage story in the wild: "my script stopped at ~2500
 pages after 100 consecutive pages with no new files. But then I manually checked
 page 2460 and the files were still there." The pagination changed shape and the
-script's stopping heuristic misfired.
+script's stopping heuristic misfired. *Tone note: 1.9K votes, 432 comments, and
+a serious topic — keep the reply short, technical, and on-topic (archiving
+reliability), no hype.*
 
 **Draft:**
 > The "100 consecutive pages with no new files" heuristic is the right instinct,
-> but it tripped on the real problem: the *pagination changed shape*, so pages
-> kept loading but the items you were looking for moved (or stopped matching).
+> but it tripped on the real problem: the pagination changed shape, so pages
+> kept loading but the items you were looking for moved or stopped matching.
 > Your manual check of page 2460 found files your script's selector couldn't see
 > — that's a markup change, not an "everything's downloaded" signal.
 >
@@ -162,49 +179,44 @@ script's stopping heuristic misfired.
 > as an alert, not as completion. If the item selector goes from N hits to 0,
 > that's breakage until proven otherwise.
 >
-> I built a small open-source loop that does exactly this — detects when
-> selectors stop matching and repairs them, but only after re-verifying the
-> extraction on the live page: https://github.com/Swastikbhat-lab/scrape-heal
->
 > How did you end up catching it — what tipped you off that the script had
 > stopped early?
 
 ---
 
-## 7. r/webscraping — "[Help] When row elements are only filled when you scroll"
-**2023-02-24** — https://www.reddit.com/r/webscraping/comments/11awgkd/
+## 7. r/webscraping — "How do you monitor your scrapers?"
+**2026-04-07** — https://www.reddit.com/r/webscraping/comments/1ser5eo/
 
-*Why:* "they redesigned and the row elements are all empty except the ones on
-screen" — a redesign breaking extraction, in the wild. Older, but answerable and
-on-topic.
+*Why:* the single most on-topic question on Reddit for this product, and recent.
+(Replaces the 2023 "rows empty when you scroll" thread, which is no longer
+indexed.) One comment in the thread even argues "that's usually an indication of
+a bad selector setup" — the thread is ripe for the baseline-validation framing.
 
 **Draft:**
-> Redesign + rows only filled on scroll = the classic lazy-load/shadow-DOM
-> change. Two separate things going on: (1) they probably swapped to
-> IntersectionObserver or shadow DOM, so the DOM genuinely doesn't contain the
-> data until you scroll — a real browser (Playwright) with `scrollIntoView`
-> handles that; (2) "rows are empty" means your selectors may be matching the
-> *container* now instead of the row, so you're reading blank cells.
+> For me it comes down to validating the *shape* of every run, not just whether
+> the request succeeded. Keep a baseline of the last good run — item count and
+> the values of an identity field — and compare every new run against it. Empty
+> output, wrong count, missing known values: all of those are failures, even
+> when the HTTP layer returned 200. That's the gap most monitors miss: they
+> watch request status, but the silent failures live in the output.
 >
-> Quick check: scroll to the bottom of the page and see if the rows fill in —
-> if yes it's lazy-load; if they stay empty it's a selector/shape change. Either
-> way, "expected N non-empty rows" as a validation on every run would have caught
-> this the day of the redesign.
->
-> I have an open-source loop that detects exactly this kind of silent break and
-> repairs the selectors after re-verifying on the live page:
+> That baseline is also what makes *repair* possible: when the shape drifts you
+> know the site changed, and you can find the same data under its new selectors
+> and verify the fix by re-extracting. I built that into a small watchdog —
+> auto-repairs, but only after re-verifying on the live page:
 > https://github.com/Swastikbhat-lab/scrape-heal
 >
-> Is the page filling in when you scroll manually?
+> What do you monitor today — request status, output shape, or both?
 
 ---
 
 ## 8. HN — Show HN: Goldseam – heal broken Cypress selectors with a local LLM
 **2026-07-05** — https://news.ycombinator.com/item?id=48796042
 
-*Why:* the closest thing to a competitor, and it's a build-in-public Show HN.
-This is a "join the conversation" move: genuine respect, compare approaches, real
-technical question. Same problem, different target (test selectors vs scrapers).
+*Why:* the closest thing to a competitor — and this thread has **zero comments**.
+This is a "be the first" move, not a bandwagon join: genuine respect, compare
+approaches, real technical question. Same problem, different target (test
+selectors vs scrapers).
 
 **Draft:**
 > Nice — same problem I've been poking at, different angle. I'm working on the
@@ -224,11 +236,12 @@ technical question. Same problem, different target (test selectors vs scrapers).
 
 ---
 
-## 9. r/WebScrapingInsider — "What are the best AI web scraping tools in 2026?"
+## 9. r/WebScrapingInsider — "What Are the Best AI Web Scraping Tools in 2026?"
 **2026-04-23** — https://www.reddit.com/r/WebScrapingInsider/comments/1stguri/
 
-*Why:* a landscape-mapping thread. The gap to name: every tool sells extraction;
-nobody sells "staying alive". Good for the product's positioning answer.
+*Why:* a landscape-mapping thread — and the OP is running a **comparative
+study**, so a well-argued answer becomes a citation in their write-up. The gap
+to name: every tool sells extraction; nobody sells "staying alive".
 
 **Draft:**
 > The interesting gap in that landscape isn't extraction — every tool there
@@ -278,13 +291,29 @@ the maintenance lesson.
 
 ---
 
+## Bonus targets (if any of the main ten stall)
+
+- **r/webscraping — "How do companies keep important scrapers reliable?"**
+  (Nov 2025, [1p3xi6d](https://www.reddit.com/r/webscraping/comments/1p3xi6d/)) —
+  the ops/B2B angle: "every time a website updates its [markup]…" Same
+  baseline-validation answer, framed for teams, not hobbyists.
+- **r/AI_Agents — "Are we overengineering web scraping for agents?"**
+  (Feb 2026, [1r613io](https://www.reddit.com/r/AI_Agents/comments/1r613io/)) —
+  the "63↑ thread" gets cross-referenced there; a comment offering the
+  cheap-and-verifiable alternative fits.
+- **r/webscraping — Monthly Self-Promotion, August 2026**
+  ([1vcbi8t](https://www.reddit.com/r/webscraping/comments/1vcbi8t/)) — the one
+  place a direct pitch is *expected*. Post the README GIF + one-liner there
+  without hesitation.
+
 ## Posting rules (from the playbook)
 
 - **Read the thread first.** Drafts are written from search snippets; adjust the
   specifics (their exact symptom, their stack) before posting.
 - **Answer first, always.** Every draft is standalone-helpful with the link
   removed. If the tool doesn't fit the thread, skip the link — the answer alone
-  still earns the conversation.
+  still earns the conversation. (#5 is the worked example: WAF breakage gets the
+  honest answer, and the link only appears by contrast.)
 - **One question at the end, every time.** Questions get answers; pitches get silence.
 - **Reply to replies.** These ten threads are the start, not the finish.
 - **Track the outcomes** in a note: who replied, who tried the demo, who said
