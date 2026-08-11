@@ -213,26 +213,52 @@ a bad selector setup" — the thread is ripe for the baseline-validation framing
 ## 8. HN — Show HN: Goldseam – heal broken Cypress selectors with a local LLM
 **2026-07-05** — https://news.ycombinator.com/item?id=48796042
 
-*Why:* the closest thing to a competitor — and this thread has **zero comments**.
-This is a "be the first" move, not a bandwagon join: genuine respect, compare
-approaches, real technical question. Same problem, different target (test
-selectors vs scrapers).
+*Why:* the closest thing to a competitor — and this thread has **zero comments**
+(still true as of 2026-08-10), so this is a "be the first comment" move, not a
+bandwagon join.
 
-**Draft:**
-> Nice — same problem I've been poking at, different angle. I'm working on the
-> scraper side (selectors die when the site redesigns, nothing errors, data goes
-> stale silently): https://github.com/Swastikbhat-lab/scrape-heal
+*Research note (2026-08-10):* their design is more sophisticated than the
+snippet suggested — it already has verification, so the reply must engage with
+it rather than ask whether it exists. From `adam-s/goldseam`'s README:
+
+- **Six-rung verification ladder**: triage, propose, resolve, and an oracle
+  judge offline; two rerun rungs re-run the app before a repair lands.
+- **Repairs are restricted to selector strings only** — the suite's assertions
+  are never regenerated, so a repair can't silently weaken a test.
+- **Honest give-ups** are first-class: page never loaded, degraded capture,
+  low confidence — reported, never hidden.
+- Redacted captures (DOM + aria tree + error) so the model never sees app
+  source; everything lands as a reviewed one-line git diff; BYO model
+  (Claude CLI / Ollama / OpenAI-compatible).
+
+The genuinely interesting comparison: they prevent weakened repairs by
+*restricting the repair space* (selector strings only); scrape-heal prevents
+them by *requiring data equivalence* (re-extraction must reproduce the last
+good run). That constraint-vs-verification tradeoff is the conversation.
+
+**Draft (first comment, design-informed):**
+> Nice — same problem from the test side, and the design notes answer the
+> question I usually ask about these: you've got a real verification story.
+> The six-rung ladder (offline triage/propose/resolve/oracle, then reruns
+> against the app) plus "give-up is a first-class outcome" is the honest
+> version of auto-repair.
 >
-> The part I'm most curious about in both approaches is the *success signal*.
-> You propose the healed selector with a local LLM — what tells you the repair
-> actually worked? For scrapers I've been using "re-extract on the live page and
-> require the same data as the last good run", i.e. verification is separate
-> from proposal and never gets to be creative. Do you verify against something
-> equivalent in Cypress (the test still passing?), or is the model's confidence
-> the gate?
+> I've been building the scraper-side equivalent — selectors die when a site
+> redesigns, extraction goes silent, nobody notices — and the ground truth is
+> what I find interesting between the two: https://github.com/Swastikbhat-lab/scrape-heal
 >
-> Would love to hear what failure cases you've hit where the LLM confidently
-> proposes a selector that's wrong but plausible.
+> You never weaken assertions because the repair space is restricted to
+> selector strings. I never ship a repair unless re-extracting the live page
+> reproduces the last good run's data — the data is the oracle, not the test.
+> A passing test still requires trusting the test caught what changed; a
+> data-equality check can't be argued with.
+>
+> Genuinely curious about the offline oracle judge: when a selector breaks
+> because of a *layout change* rather than a rename — element moved, content
+> reflowed — does the judge have enough signal (DOM + aria tree) to tell
+> "fix the selector" apart from "the page genuinely changed"? That's the case
+> where my loop refuses to repair, and I'd love to hear how the judge handles
+> it.
 
 ---
 

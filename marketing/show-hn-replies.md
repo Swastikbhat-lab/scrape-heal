@@ -111,13 +111,20 @@ Track who replied and what they asked in `marketing/outreach-tracker.md`
 
 ## 10. "How is this different from Goldseam?"
 
-> Same problem, different target. Goldseam heals *test selectors* in Cypress —
-> the success signal is the test still passing. scrape-heal heals *extraction
-> selectors* for scrapers — the success signal is re-extracting the same data
-> as the last good run. I actually commented on their Show HN; the "what's your
-> success signal for a healed selector?" question is the interesting one for
-> both projects, and I think both landed on verification, just against
-> different ground truth.
+> Same problem, different target — and both of us landed on verification, just
+> against different ground truth. Goldseam heals *Cypress test selectors*: a
+> six-rung ladder (offline triage/propose/resolve/oracle judge + reruns
+> against the app) verifies each repair, and the repair space is restricted to
+> selector strings so assertions can never be weakened. scrape-heal heals
+> *extraction selectors* for scrapers: verification is re-extracting the live
+> page and requiring the same data as the last good run — the data is the
+> oracle, not the test.
+>
+> The interesting tradeoff: they prevent weakened repairs by restricting what
+> can change (selector strings only); I prevent them by requiring data
+> equivalence (the extracted rows must match). Different mechanisms, same
+> instinct — and both treat "give up honestly" as a real outcome rather than
+> hiding it.
 
 ---
 
