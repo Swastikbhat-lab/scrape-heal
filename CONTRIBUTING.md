@@ -75,6 +75,20 @@ scripts/         GIF generators — re-run npm run make:gifs if a demo's story c
 Short message, why-focused, one logical change per commit. If the change fixes an
 issue, reference it. No "wip" commits on the main line.
 
+## Releasing (maintainers)
+
+A version bump is one command — CI does the rest:
+
+```bash
+npm version patch -m "v%s"   # or minor / major; tags vX.Y.Z automatically
+git push && git push --tags
+```
+
+The `Release` workflow (`.github/workflows/release.yml`) runs the full gate
+(typecheck + tests + build, plus a tag-must-match-version check) and then
+`npm publish`. It needs an npm access token stored as the `NPM_TOKEN` repo
+secret — add it once and releases stay one command away.
+
 ## Asking questions
 
 Open an issue with the **Question** template — the maintainer answers fast, and
