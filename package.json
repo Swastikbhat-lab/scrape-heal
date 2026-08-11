@@ -9,13 +9,16 @@
   },
   "scripts": {
     "demo": "tsx src/demo.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "make:gif": "node scripts/make-demo-gif.mjs"
   },
   "dependencies": {
     "playwright": "^1.49.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "gifenc": "^1.0.3",
+    "pngjs": "^7.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

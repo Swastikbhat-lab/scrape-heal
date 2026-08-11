@@ -10,6 +10,10 @@ scrape-heal is a proof of concept for the fix: a scraper that **remembers what t
 looked like**, notices when it stops looking like that, and repairs its own selectors —
 but only after proving the repair works on the live page.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="scrape-heal demo: a healthy run, a silent redesign, breakage detected, then the selectors repaired and verified on the live page" width="640">
+</p>
+
 ```
 healthy → site redesigns → BROKEN → healer wakes up → repair verified → same data out
 ```
@@ -21,6 +25,9 @@ npm install
 npx playwright install chromium
 npm run demo
 ```
+
+*(The GIF above was generated, not recorded — `npm run make:gif` re-renders it
+from the same transcript whenever the demo's story changes.)*
 
 You'll watch a full break-and-recover cycle against a fake storefront:
 
