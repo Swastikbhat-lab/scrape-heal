@@ -170,6 +170,11 @@ interface WatchSpec {
   alerts?: AlertChannel;
   validatorPath?: string;
   validator?: Validator;
+  proxy?: { proxies?: string[]; providerUrl?: string };
+  pagination?: { kind: string; selector?: string; pattern?: string; maxPages?: number };
+  pipelines?: Record<string, unknown>[];
+  auth?: { kind: string; cdp?: string; dir?: string; loginUrl?: string; userSelector?: string; passSelector?: string; submitSelector?: string; sessionPath?: string };
+  pluginsDir?: string;
 }
 
 function parseFieldsFlag(s: string): { name: string; selector: string }[] {
@@ -248,9 +253,42 @@ function watchFrom(
     : undefined;
 
   const validatorPath = args.get('validator') ?? cfg.validator;
+
+  // ---- v2: proxy, pagination, pipelines, auth, plugins -----------------
+  const proxyFlag = args.get('proxy');
+  const proxy = proxyFlag || cfg.proxy ? {
+    proxies: proxyFlag ? proxyFlag.split(',').map(s => s.trim()).filter(Boolean) : cfg.proxy?.proxies,
+    providerUrl: args.get('proxy-provider') ?? cfg.proxy?.providerUrl,
+  } : undefined;
+
+  const paginationFlag = args.get('pagination');
+  const pagination = paginationFlag || cfg.pagination ? {
+    kind: paginationFlag ?? cfg.pagination?.kind ?? 'next-link',
+    selector: args.get('pagination-selector') ?? cfg.pagination?.selector,
+    pattern: args.get('pagination-pattern') ?? cfg.pagination?.pattern,
+    maxPages: Number(args.get('pagination-max') ?? cfg.pagination?.maxPages ?? 20),
+  } : undefined;
+
+  const pipelines = cfg.pipelines ?? undefined;
+
+  const authFlag = args.get('auth');
+  const auth = authFlag || cfg.auth ? {
+    kind: authFlag ?? cfg.auth?.kind ?? 'none',
+    cdp: args.get('auth-cdp') ?? cfg.auth?.cdp,
+    dir: args.get('auth-dir') ?? cfg.auth?.dir,
+    loginUrl: args.get('auth-login-url') ?? cfg.auth?.loginUrl,
+    userSelector: args.get('auth-user-selector') ?? cfg.auth?.userSelector,
+    passSelector: args.get('auth-pass-selector') ?? cfg.auth?.passSelector,
+    submitSelector: args.get('auth-submit-selector') ?? cfg.auth?.submitSelector,
+    sessionPath: args.get('auth-session') ?? cfg.auth?.sessionPath,
+  } : undefined;
+
+  const pluginsDir = args.get('plugins-dir') ?? cfg.pluginsDir;
+
   return {
     label, config, intervalSeconds: interval, cycles, statePath,
     writeConfigPath, onAlert, fetchRows, llm, alerts: cfg.alerts, validatorPath,
+    proxy, pagination, pipelines, auth, pluginsDir,
   };
 }
 
@@ -347,6 +385,9 @@ if (targets.length > 0) {
       llm: s.llm,
       validator: s.validator,
       alerts: s.alerts,
+      proxy: s.proxy,
+      pagination: s.pagination as any,
+      pipelines: s.pipelines as any,
       log: (line) => console.log(`[${s.label}] ${line}`),
     }, s.config);
   }));
@@ -441,6 +482,17 @@ if (mutateFlipEvery !== undefined) {
 // ---- pluggable validator -----------------------------------------------------
 spec.validator = await loadValidatorOpt(spec.validatorPath);
 
+// ---- v2: load plugins --------------------------------------------------------
+if (spec.pluginsDir) {
+  try {
+    const { loadPlugins } = await import('./plugins.js');
+    const n = await loadPlugins(spec.pluginsDir);
+    if (n) console.log(`  ${n} plugin(s) loaded from ${spec.pluginsDir}`);
+  } catch (err) {
+    console.error(`  plugins: ${(err as Error).message}`);
+  }
+}
+
 console.log(`  watching ${spec.config.url || '(rows source)'} every ${spec.intervalSeconds}s${spec.cycles ? ` for ${spec.cycles} cycle(s)` : ''}${mutateEvery !== undefined ? `, site mutates every ${mutateEvery}s` : ''}${mutateFlipEvery !== undefined ? `, markup flips every ${mutateFlipEvery}s` : ''}${mutateValuesEvery !== undefined ? `, site + data change every ${mutateValuesEvery}s` : ''}${spec.fetchRows ? ' (rows from an external scraper)' : ''}`);
 if (filePath) console.log(`  config → ${filePath}`);
 console.log(`  state → ${spec.statePath}`);
@@ -449,6 +501,11 @@ if (spec.llm) console.log(`  llm repair armed — model ${spec.llm.model ?? 'gpt
 if (spec.validator) console.log(`  validator → ${spec.validatorPath}`);
 if (spec.alerts) console.log(`  alerts → ${Object.keys(spec.alerts).join(', ')}`);
 if (spec.fetchRows && !spec.config.url) console.log('  detection only — set url to enable self-healing');
+if (spec.proxy) console.log(`  proxy pool → ${spec.proxy.proxies?.length ?? 0} proxy(s)${spec.proxy.providerUrl ? ` + provider` : ''}`);
+if (spec.pagination) console.log(`  pagination → ${spec.pagination.kind}${spec.pagination.selector ? ` (${spec.pagination.selector})` : ''}`);
+if (spec.pipelines?.length) console.log(`  pipelines → ${spec.pipelines.length} output(s)`);
+if (spec.auth && spec.auth.kind !== 'none') console.log(`  auth → ${spec.auth.kind}`);
+if (spec.pluginsDir) console.log(`  plugins → ${spec.pluginsDir}`);
 console.log('');
 
 const browser = await chromium.launch();
@@ -464,6 +521,9 @@ const exitCode = await runWatchdog(browser, page, {
   llm: spec.llm,
   validator: spec.validator,
   alerts: spec.alerts,
+  proxy: spec.proxy,
+  pagination: spec.pagination as any,
+  pipelines: spec.pipelines as any,
   log: (line) => console.log(line),
 }, spec.config);
 

@@ -43,6 +43,16 @@ export interface WatchFileConfig {
   alerts?: AlertChannel;
   /** Live dashboard server over the state directory. */
   dashboard?: { port?: number; stateDir?: string };
+  /** v2: Proxy pool for anti-bot rotation. */
+  proxy?: { proxies?: string[]; providerUrl?: string; providerRefreshSeconds?: number; cooldownBaseSeconds?: number; cooldownMaxSeconds?: number };
+  /** v2: Multi-page pagination config. */
+  pagination?: { kind: string; selector?: string; pattern?: string; maxPages?: number; maxItems?: number; pageWaitMs?: number; dedupeField?: string };
+  /** v2: Data output pipelines (webhook, file, DB). */
+  pipelines?: Record<string, unknown>[];
+  /** v2: Authentication for pages behind a login. */
+  auth?: { kind: string; cdp?: string; dir?: string; loginUrl?: string; userSelector?: string; passSelector?: string; submitSelector?: string; rememberSelector?: string; settleMs?: number; successSelector?: string; sessionPath?: string };
+  /** v2: Directory of plugin files to load at startup. */
+  pluginsDir?: string;
   /** Multiple targets: each entry is its own watch config, merged over the
    *  top-level keys as defaults. Each target gets its own selectors, cadence,
    *  LLM config, validator, and state file — a fleet of scrapers, one config. */
@@ -127,17 +137,36 @@ export const TEMPLATE = `{
   "_alerts": "Optional: notify humans the day a cycle breaks. Incoming-webhook URLs — Slack, Discord, or any generic JSON webhook. cooldownMinutes throttles to one alert per target per N minutes (default 60); 0 = alert every red cycle.",
   "alerts": { "slack": null, "discord": null, "webhook": null, "cooldownMinutes": 60 },
 
+  "_proxy": "v2 Optional: rotate proxies to avoid anti-bot blocks. Static list or a provider URL that returns a JSON array of proxy URLs. cooldownBaseSeconds: base cooldown on block (default 30, doubles per consecutive failure, max 300).",
+  "proxy": { "proxies": null, "providerUrl": null, "providerRefreshSeconds": 120, "cooldownBaseSeconds": 30, "cooldownMaxSeconds": 300 },
+
+  "_pagination": "v2 Optional: walk every page, not just the first. next-link clicks a selector; load-more clicks a button; infinite-scroll scrolls; url-pattern substitutes {page}. maxPages caps the walk (default 20).",
+  "pagination": { "kind": "next-link", "selector": ".pagination .next", "maxPages": 20, "maxItems": 500 },
+
+  "_pipelines": "v2 Optional: where extracted data goes after a healthy cycle. webhook posts one or all rows; file writes JSON/JSONL; postgres/mysql need registerDbRunner().",
+  "pipelines": [
+    { "kind": "webhook", "url": null, "secret": null },
+    { "kind": "file", "path": "./data/products.jsonl" }
+  ],
+
+  "_auth": "v2 Optional: scrape pages behind a login. attach connects to your signed-in browser via CDP; profile uses a persistent browser context (sign in once, scrape forever); login fills a form (credentials from SCRAPE_HEAL_AUTH_USER/PASS env vars — never stored in config).",
+  "auth": { "kind": "attach", "cdp": "http://127.0.0.1:9222" },
+
+  "_plugins": "v2 Optional: directory of plugin files (extractors, healers, transforms) loaded at startup. Each file exports a plugin object. Plugins are tried in registration order before the built-in logic.",
+  "pluginsDir": "./scrape-heal-plugins",
+
   "_dashboard": "Optional: a live board of every target's last cycle, heal history, and learned rules. npm run dashboard (or scrape-heal --dashboard [port]) starts it; stateDir is where the per-target state files live.",
   "dashboard": { "port": 4321, "stateDir": ".scrape-heal" },
 
-  "_targets": "Optional: watch a fleet. Each entry is its own target; the top-level keys above are its defaults. Each target gets its own selectors, cadence, llm, validator, and state file. Delete the single-target keys above when using targets.",
+  "_targets": "Optional: watch a fleet. Each entry is its own target; the top-level keys above are its defaults. Each target gets its own selectors, cadence, llm, validator, proxy, pagination, pipelines, and state file. Delete the single-target keys above when using targets.",
   "targets": [
     {
       "url": "https://shop-a.example.com/products",
       "items": ".product-card",
       "fields": { "name": ".name", "price": ".price" },
       "intervalSeconds": 300,
-      "llm": { "maxAttempts": 5 }
+      "llm": { "maxAttempts": 5 },
+      "pagination": { "kind": "next-link", "selector": ".pagination .next" }
     },
     {
       "url": "https://shop-b.example.com/items",

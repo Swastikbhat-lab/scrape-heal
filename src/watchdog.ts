@@ -8,6 +8,13 @@ import { heal, siteOrigin } from './heal.js';
 import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import { sendAlert, type AlertChannel } from './alert.js';
 import { playwrightRows, type RowFetch } from './source.js';
+import { ProxyPool, proxyLaunchOptions, type ProxyPoolOptions } from './proxy.js';
+import { detectGrid, extractByGrid } from './visual.js';
+import type { PaginationConfig, PagedResult } from './pagination.js';
+import { extractAllPages } from './pagination.js';
+import type { Pipeline } from './pipeline.js';
+import { runPipelines } from './pipeline.js';
+import { tryExtractors, tryHealers, applyTransforms } from './plugins.js';
 
 export interface LedgerEntry {
   /** A selector config proven against this target before. */
@@ -61,6 +68,12 @@ export interface WatchOptions {
   validator?: Validator;
   /** Notify humans the day a cycle breaks — Slack/Discord/webhook channels. */
   alerts?: AlertChannel;
+  /** v2: Proxy pool for anti-bot rotation. */
+  proxy?: ProxyPoolOptions;
+  /** v2: Multi-page pagination config. */
+  pagination?: PaginationConfig;
+  /** v2: Data output pipelines (webhook, file, DB). */
+  pipelines?: Pipeline[];
   log: (line: string) => void;
 }
 
@@ -247,13 +260,56 @@ export async function runWatchdog(
   let config = state.config;
   const fetchRows = opts.fetchRows ?? playwrightRows(page, () => config);
 
+  // Initialize proxy pool for anti-bot rotation.
+  const proxyPool = opts.proxy ? new ProxyPool(opts.proxy) : null;
+
   let exitCode = 0;
   let cycle = 0;
   while (true) {
     cycle++;
     const checkedAt = new Date().toISOString();
 
-    const items = await fetchRows();
+    let items = await fetchRows();
+
+    // ---- v2: pagination — when configured, walk every page --------------
+    if (items && items.length > 0 && opts.pagination && config.url) {
+      opts.log(`  pagination enabled (${opts.pagination.kind}) — walking pages…`);
+      try {
+        const paged = await extractAllPages(
+          page, config.url,
+          async () => (await fetchRows()) ?? [],
+          opts.pagination,
+        );
+        items = paged.items;
+        opts.log(`  pagination done — ${items.length} item(s) across ${paged.pagesVisited} page(s)`);
+      } catch (err) {
+        opts.log(`  pagination failed: ${(err as Error).message}`);
+      }
+    }
+
+    // ---- v2: visual fallback — when DOM extraction returns empty --------
+    if (items && items.length === 0 && config.url) {
+      opts.log('  DOM extraction returned 0 items — trying visual grid detection…');
+      try {
+        const grid = await detectGrid(page);
+        if (grid) {
+          items = await extractByGrid(page, grid, config.fields);
+          opts.log(`  visual extraction: ${items.length} item(s) from a ${grid.rows}×${grid.cols} grid`);
+        }
+      } catch (err) {
+        opts.log(`  visual extraction failed: ${(err as Error).message}`);
+      }
+    }
+
+    // ---- v2: plugin transforms — post-process the extracted rows --------
+    if (items && items.length > 0) {
+      try {
+        items = await applyTransforms(items, config);
+      } catch (err) {
+        opts.log(`  plugin transform failed: ${(err as Error).message}`);
+      }
+    }
+
     if (items === null) {
       // The scraper itself failed — a crash is not a site change, and healing
       // it would be guessing about which of the two is broken. Alert instead.
@@ -286,6 +342,12 @@ export async function runWatchdog(
         `[cycle ${cycle}] OK — ${items.length} item(s), shape matches the last good run` +
         (cycle === 1 && items.length ? ' (baseline captured)' : ''),
       );
+
+      // ---- v2: pipelines — deliver data downstream on every healthy cycle
+      if (opts.pipelines && opts.pipelines.length && items.length > 0) {
+        runPipelines(opts.pipelines, items as Record<string, unknown>[], opts.log)
+          .catch((err) => opts.log(`  pipeline error: ${(err as Error).message}`));
+      }
     } else {
       opts.log(`[cycle ${cycle}] RED — ${v.issues.join('; ')}`);
 
@@ -382,6 +444,7 @@ export async function runWatchdog(
     await sleep(opts.intervalSeconds * 1000);
   }
 
+  proxyPool?.dispose();
   return exitCode;
 }
 

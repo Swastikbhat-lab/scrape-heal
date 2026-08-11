@@ -1,5 +1,5 @@
 /**
- * scrape-heal's public API.
+ * scrape-heal's public API — the market-leading self-healing scraper.
  *
  * The whole loop is a few functions — plug it into your own code, scheduler,
  * or scraper in a handful of lines:
@@ -46,6 +46,9 @@ export { sendAlert } from './alert.js';
 
 export { formatMemory } from './memory.js';
 
+export type { TargetSnapshot, DashboardOptions, RunningDashboard } from './dashboard.js';
+export { snapshotDir, startDashboard } from './dashboard.js';
+
 export type { RowFetch } from './source.js';
 export { playwrightRows, commandRows, fileRows, parseRows } from './source.js';
 
@@ -53,3 +56,39 @@ export type { WatchFileConfig } from './config.js';
 export {
   readConfigFile, fieldsFrom, initConfig, mergeTargetConfigs, TEMPLATE, CONFIG_FILENAME,
 } from './config.js';
+
+// ---- v2: proxy rotation for anti-bot handling
+export type { ProxyEntry, ProxyPoolOptions } from './proxy.js';
+export { ProxyPool, proxyLaunchOptions } from './proxy.js';
+
+// ---- v2: visual/OCR extraction fallback
+export type { VisualGrid, VisualBox, OcrEngine } from './visual.js';
+export { detectGrid, extractByGrid, ocrPage, setOcrEngine, ocrAvailable } from './visual.js';
+
+// ---- v2: multi-page pagination
+export type { PaginationKind, PaginationConfig, PagedResult } from './pagination.js';
+export { extractAllPages, detectPagination } from './pagination.js';
+
+// ---- v2: REST API server
+export type { ApiConfig } from './api.js';
+export { startApi } from './api.js';
+
+// ---- v2: data output pipelines
+export type {
+  PipelineKind, PipelineDef, WebhookPipeline, FilePipeline,
+  PostgresPipeline, MysqlPipeline, Pipeline, PipelineResult, RetryOptions, DbRunner,
+} from './pipeline.js';
+export { runPipelines, retry, registerDbRunner } from './pipeline.js';
+
+// ---- v2: authentication (login, profiles, session persistence)
+export type { AuthKind, AuthConfig, AuthHandle } from './auth.js';
+export { authenticate } from './auth.js';
+
+// ---- v2: plugin system (extensible extractors, healers, transforms)
+export type {
+  PluginKind, BasePlugin, ExtractorPlugin, HealerPlugin, TransformPlugin, Plugin,
+} from './plugins.js';
+export {
+  registerPlugin, unregisterPlugin, plugins, findPlugins,
+  loadPlugins, tryExtractors, tryHealers, applyTransforms,
+} from './plugins.js';
