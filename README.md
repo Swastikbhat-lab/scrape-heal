@@ -12,6 +12,7 @@ just an empty spreadsheet you notice a week later.
 repairs its own selectors — **only after proving the repair works on the live page.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/scrape-heal?logo=npm&logoColor=white)](https://www.npmjs.com/package/scrape-heal)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
 [![Playwright](https://img.shields.io/badge/powered%20by-Playwright-2f9e44?logo=playwright&logoColor=white)](#)
