@@ -57,8 +57,7 @@ On a cadence it becomes a watchdog — cycle after cycle, a red run repairs itse
   <img src="docs/watchdog.gif" alt="watchdog: OK → OK → RED → REPAIRED → OK, cycle after cycle" width="680">
 </div>
 
-*(Both GIFs are generated, not recorded — `npm run make:gifs` re-renders them from the same
-transcripts whenever the story changes. No OBS, no ffmpeg.)*
+
 
 ## Quickstart
 
