@@ -101,6 +101,7 @@ One config file, one command. Every key optional; CLI flags override the file wh
   "llm": { "apiKey": null, "model": "gpt-4o-mini", "baseUrl": null, "maxAttempts": 3 },  // or env SCRAPE_HEAL_LLM_*
   "validator": null,                       // path to a JS file exporting your schema check
   "alerts": null,                          // or: {"slack": "…", "discord": "…", "webhook": "…"}
+  "dashboard": null,                       // or: {"port": 4321, "stateDir": ".scrape-heal"}
   "targets": null                          // or: a fleet — see "Watch a fleet" below
 }
 ```
@@ -257,6 +258,25 @@ validator, and state file:
 independently, and the exit code is 1 if *any* target ended red. State lives per target
 (`.scrape-heal/<host:port>.json`), so healed configs and per-site LLM memory never cross wires.
 
+## Watch it live (dashboard)
+
+The state files are already a database — the dashboard is a tiny SSE server that turns them
+into a live board: every target's last cycle, heal history (the ledger), and learned rules
+(per-site LLM memory) at a glance.
+
+```bash
+npm run dashboard                    # scrape-heal --dashboard — open the printed URL
+# in another terminal:
+npm run watch -- --demo --mutate 6 --interval 5 --cycles 8
+```
+
+Each target is a card — a status pill (healthy / repaired / red), items vs. the expected
+minimum, alert count, last-healed time, the proven-config ledger, and the per-site LLM memory.
+Zero dependencies, one self-contained page, and it works for a fleet: every target's state file
+appears the moment its watchdog writes. `GET /state` returns the same view as JSON for scripts;
+`--dashboard <port>` picks a port (busy ports fall back to a free one), and `stateDir` points at
+whichever directory the state files live in.
+
 ## What it refuses to do
 
 - **Ship unverified repairs.** If the candidate doesn't re-extract the same data, you get a log
@@ -271,13 +291,12 @@ Small by design — one machine, several targets, one loop. Shipped so far: the 
 verify loop, watchdog mode, the any-scraper row contract, the selector ledger for flip-flopping
 sites, LLM-assisted repair for when even the values change (with a repair budget that learns
 from its own misses), pluggable validators, multi-target watch from one config file, human
-alerting to Slack/Discord/webhook (throttled to one alert per target per N minutes), and
-learned-rule visibility (`scrape-heal --memory <site>`) — all covered by the test suite, all
-green in CI. What this is *not*: a fleet manager, an anti-bot tool, or a multi-node production
-deployment. It is the 99% case, done well. The interesting next steps:
+alerting to Slack/Discord/webhook (throttled to one alert per target per N minutes),
+learned-rule visibility (`scrape-heal --memory <site>`), and a live dashboard
+(`scrape-heal --dashboard`) — all covered by the test suite, all green in CI. What this is
+*not*: a fleet manager, an anti-bot tool, or a multi-node production deployment. It is the 99%
+case, done well. The interesting next steps:
 
-- **A live dashboard** — the loop writes everything to state files; a small SSE server over them
-  would show N targets' last cycle, heal history, and learned rules at a glance.
 - **The anti-detection arms race** is real and this isn't that. This is about the 99% case: markup
   changed, data still there, nobody noticed.
 

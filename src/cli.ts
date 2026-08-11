@@ -11,6 +11,7 @@ import { commandRows, fileRows, type RowFetch } from './source.js';
 import { loadValidator } from './validator.js';
 import type { AlertChannel } from './alert.js';
 import { formatMemory } from './memory.js';
+import { startDashboard } from './dashboard.js';
 import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import {
   CONFIG_FILENAME, readConfigFile, fieldsFrom, initConfig, mergeTargetConfigs,
@@ -106,6 +107,27 @@ if (args.has('memory')) {
   }
   console.log(formatMemory(memory, site));
   process.exit(0);
+}
+
+// ---- --dashboard: the live board over the per-target state files ----------
+// The loop's state files ARE the data source — any number of watchdogs
+// (single or fleet) show up here the moment they write. SSE + one page,
+// zero dependencies.
+if (args.has('dashboard')) {
+  const stateDir =
+    args.get('state-dir') ?? fileCfg.dashboard?.stateDir ?? dirname(DEFAULT_STATE);
+  const portArg = args.get('dashboard');
+  const port = portArg === 'true'
+    ? fileCfg.dashboard?.port ?? 4321
+    : Number(portArg);
+  const dash = await startDashboard({
+    stateDir,
+    port: Number.isFinite(port) ? port : 4321,
+    log: (line) => console.log(line),
+  });
+  console.log(`  state dir → ${stateDir}`);
+  console.log('  Ctrl+C to stop');
+  await new Promise(() => {}); // serve until interrupted
 }
 
 // ---- flags override the file ------------------------------------------------

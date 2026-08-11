@@ -41,6 +41,8 @@ export interface WatchFileConfig {
   /** Notify humans the day a target breaks: Slack / Discord / generic JSON
    *  webhook URLs. Per-target in a `targets` config. */
   alerts?: AlertChannel;
+  /** Live dashboard server over the state directory. */
+  dashboard?: { port?: number; stateDir?: string };
   /** Multiple targets: each entry is its own watch config, merged over the
    *  top-level keys as defaults. Each target gets its own selectors, cadence,
    *  LLM config, validator, and state file — a fleet of scrapers, one config. */
@@ -124,6 +126,9 @@ export const TEMPLATE = `{
 
   "_alerts": "Optional: notify humans the day a cycle breaks. Incoming-webhook URLs — Slack, Discord, or any generic JSON webhook. cooldownMinutes throttles to one alert per target per N minutes (default 60); 0 = alert every red cycle.",
   "alerts": { "slack": null, "discord": null, "webhook": null, "cooldownMinutes": 60 },
+
+  "_dashboard": "Optional: a live board of every target's last cycle, heal history, and learned rules. npm run dashboard (or scrape-heal --dashboard [port]) starts it; stateDir is where the per-target state files live.",
+  "dashboard": { "port": 4321, "stateDir": ".scrape-heal" },
 
   "_targets": "Optional: watch a fleet. Each entry is its own target; the top-level keys above are its defaults. Each target gets its own selectors, cadence, llm, validator, and state file. Delete the single-target keys above when using targets.",
   "targets": [

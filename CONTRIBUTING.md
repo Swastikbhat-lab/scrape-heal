@@ -21,7 +21,7 @@ Thanks for showing up. This is a deliberately small project — The whole loop f
 npm install
 npx playwright install chromium   # the end-to-end tests drive a real browser
 npm run typecheck
-npm test                          # 31 tests — should be green before you start
+npm test                          # the full suite — should be green before you start
 ```
 
 Node >= 20. No runtime dependencies beyond Playwright; keep it that way. If a feature
@@ -40,10 +40,12 @@ src/
   watchdog.ts    the loop: extract → validate → ledger → heal → alert
   source.ts      the any-scraper contract: rows from a command, file, or Playwright
   alert.ts       Slack/Discord/generic-webhook delivery for unhealable red runs
+                 (throttled per target via alerts.cooldownMinutes)
   memory.ts      --memory output: what the loop has learned per site
+  dashboard.ts   the live board: snapshotDir() + a zero-dep SSE server (--dashboard)
   config.ts      scraper.config.json parsing + template + mergeTargetConfigs
   cli.ts         the CLI: flags, demo fixture server, mock LLM endpoint,
-                 concurrent multi-target mode, --memory
+                 concurrent multi-target mode, --memory, --dashboard
   demo.ts        the 15-second story demo (npm run demo)
   demo-any.ts    same loop with a fetch+regex scraper (npm run demo:any)
 fixture/         site-v1/v2/v3.html (the redesigns), regex-scraper.mjs, validator.js
