@@ -59,7 +59,7 @@ Three moving parts, each boring on purpose:
 | **Dashboard** | zero-dependency live board over the state files | `--dashboard` |
 | **Pagination** | next-link, load-more, infinite-scroll, or `{page}` URL patterns | `pagination` |
 | **Proxy rotation** | scored pool with cooldown, backoff, and block detection | `proxy` |
-| **Auth** | pages behind a login: attach, profile, or form-fill | `auth` |
+| **Auth** | pages behind a login — session held across cycles, scraped and healed like any other | `auth` |
 | **Pipelines** | send healthy rows downstream: webhook, file, Postgres, MySQL | `pipelines` |
 | **Plugins** | extend the loop: extractors, site-specific healers, transforms | `pluginsDir` |
 | **Visual extraction** | reads a redesigned grid straight off the pixels (OCR seam included) | visual |
@@ -68,6 +68,7 @@ Three moving parts, each boring on purpose:
 | **Failure classification** | retry 5xx/timeouts with backoff, rotate proxies on blocks, heal only real breakage | built-in |
 | **Evidence on red** | screenshot + DOM snapshot + HTTP status per failed cycle, on the board and in alerts | built-in |
 | **Library API** | the whole loop as functions — embed it in your own scheduler | `import 'scrape-heal'` |
+| **Drop-in adapters** | call the loop from Scrapy, Crawlee, or plain Playwright — no migration | `integrations/` |
 
 ## See it happen
 
@@ -257,6 +258,37 @@ loop and it stops demanding the old shape:
 ```
 
 (Skipped automatically when a pluggable `validator` is set — your schema decides.)
+
+## How good is the repair? (benchmark)
+
+"Self-healing" is a claim; the benchmark makes it a number. `npm run benchmark`
+runs the real loop against 15 recorded redesigns — each one a live
+before/after pair, a real baseline capture, and the real browser + verify gate
+(a mock LLM stands in for the repair budget when the data itself changed):
+
+```bash
+npm run benchmark                    # every scenario, the rate at the end
+npm run benchmark -- --min-rate 0.9  # exit 1 if the rate ever falls below
+```
+
+Current result: **15/15 — 100%**.
+
+| Kind | Score | What it covers |
+|---|---|---|
+| Text pass | 5/5 | class renames, wrapper layers, partial renames, list→grid, URL-valued fields |
+| LLM pass | 6/6 | values changed, currency format, date format, case changes, wrong-guess retry, prose-binding correction |
+| Refusals | 4/4 | prose where prices should be, vanished data, moved attribute fields, thinned assortments |
+
+A scenario *passes* only if the shipped config re-extracts the right data from
+the redesigned page — right shape, right value kinds, right identities. The
+refusals count as passes: when verification can't be satisfied, shipping
+nothing **is** the repair. That's also the honest envelope — an
+attribute-valued field like an `<img src>` has no visible text to anchor on,
+so the loop correctly refuses rather than guess.
+
+The benchmark is a regression floor, not a claim about every site on the
+internet. The corpus lives in `benchmark/scenarios.ts` — add a scenario when
+you find a redesign that beats the loop.
 
 ## Your schema, your rules (pluggable validators)
 
@@ -546,6 +578,39 @@ curl -X POST http://localhost:4200/run/example.com   # one cycle on one target
 
 A shared browser is launched once and reused across cycles.
 
+## Scrape behind a login (v3: auth wired into the loop)
+
+Most valuable data is behind a login wall. The loop now holds the authenticated
+session across **every** cycle — fetching, pagination, the visual fallback, the
+selector ledger, healing, and evidence capture all run through it — so a
+login-walled page is scraped and healed like any other page, instead of being
+seen as an anonymous site that mysteriously returned a login form.
+
+Three modes (`auth.kind`):
+
+| Mode | What it does | Config |
+|---|---|---|
+| `attach` | drive a browser you already signed into (CDP) | `{ "kind": "attach", "cdp": "http://127.0.0.1:9222" }` |
+| `profile` | persistent profile — sign in once, scrape forever | `{ "kind": "profile", "dir": "./browser-profile" }` |
+| `login` | programmatic form login; credentials never touch disk | `{ "kind": "login", "loginUrl": "…", "userSelector": "#user", "passSelector": "#pass", "submitSelector": "#submit", "successSelector": ".dashboard" }` |
+
+Credentials are never stored or logged — `login` reads `SCRAPE_HEAL_AUTH_USER` /
+`SCRAPE_HEAL_AUTH_PASS` from the environment at startup, and an optional
+`sessionPath` saves the session so the next run skips the form (an expired one
+re-logs-in automatically).
+
+- **Session held across cycles** — the context is opened once, before the first
+  cycle, and closed when the loop exits. Every page the loop touches comes from it.
+- **Combined with proxy rotation** — Playwright proxies are per-context, so each
+  per-fetch context re-applies the session (cookies + localStorage) on top of
+  the current proxy. `attach` is the one exception (your own browser's context
+  can't be re-proxied).
+- **Fail fast** — a login that fails (wrong credentials, missing env vars, a
+  down CDP browser) stops the loop with a loud message instead of silently
+  scraping the anonymous site for days.
+- **When the session expires mid-watch** — the cycle goes red like any other
+  breakage, and the healer says so honestly: a login wall is not a redesign.
+
 ## Watch a fleet (multiple targets)
 
 One config file, many sites — the top-level keys are the defaults, `targets` overrides per site.
@@ -702,11 +767,48 @@ runWatchdog(browser, await browser.newPage(), {
 
 Or skip the loop and use the pieces directly: `extract` pulls rows out of a page, `validate`
 checks them against the last good run, `heal` proposes and verifies a repair. Everything —
-`runWatchdog`, `heal`, `ProxyPool`, `authenticate`, `extractAllPages`, `detectPagination`,
-`detectGrid`/`extractByGrid`/`setOcrEngine`, `runPipelines`/`registerDbRunner`/`retry`,
-`registerPlugin`/`loadPlugins`, `startApi`, `startDashboard`, `sendAlert`, `loadValidator`,
-`parseRows`, `rememberLLM`, `classifyValue`/`verifyValueTypes` — is exported from the
-package root, fully typed.
+`runWatchdog`, `heal`, `scrapeWithSelfHealing`/`withSelfHealing`/`repairSelectors`, `ProxyPool`,
+`authenticate`, `extractAllPages`, `detectPagination`, `detectGrid`/`extractByGrid`/`setOcrEngine`,
+`runPipelines`/`registerDbRunner`/`retry`, `registerPlugin`/`loadPlugins`, `startApi`,
+`startDashboard`, `sendAlert`, `loadValidator`, `parseRows`, `rememberLLM`,
+`classifyValue`/`verifyValueTypes` — is exported from the package root, fully typed.
+
+## Drop-in adapters (Scrapy, Crawlee, plain Playwright)
+
+Already have a crawler? Don't migrate — plug the loop into it. The pattern is
+identical everywhere: your rows are validated against the last good run; when
+they stop matching, the loop re-derives the selectors in a real browser and
+**proves** the repair on the live page before anything changes.
+
+| Adapter | What it does | File |
+|---|---|---|
+| **Playwright** | `scrapeWithSelfHealing()` — extract, validate, and heal in one call | `integrations/playwright.mjs` |
+| **Crawlee** | `withSelfHealing()` — a per-request guard around your extraction | `integrations/crawlee.mjs` |
+| **Scrapy** | a spider middleware that keeps your last good rows and repairs the config the moment an item breaks | `integrations/scrapy_middleware.py` |
+
+```js
+// plain Playwright — the whole loop in one call
+const { rows, config: fixed, repaired } = await scrapeWithSelfHealing({
+  browser, config,
+  extractRows: async () => rowsFromDom(page),
+  lastGoodRows,                        // your last good run; [] on first
+});
+```
+
+The Node adapters call the loop directly (from npm they're package-root
+exports). The Scrapy middleware is Python, so it shells out to a new one-shot
+command — **"fix it now" without a watchdog**:
+
+```bash
+scrape-heal repair --config scraper.config.json --rows last-good.json
+# re-measures the live page, heals the selectors, rewrites the config, exits 0/1
+```
+
+`repair` takes the config and your last good rows (JSON/JSONL/CSV, from a file
+or `--rows-from "<cmd>"`), rewrites the selectors in place — preserving every
+other config key — and exits 1 with nothing modified when no repair can be
+verified. Pair it with the middleware for drop-in self-healing, or with cron
+for a nightly "heal me if I broke" job. Full recipes: docs/INTEGRATIONS.md.
 
 ## What it refuses to do
 
@@ -726,8 +828,6 @@ v2 shipped the pieces; v3 added change watching and failure classification
 (transient retries, proxy rotation on blocks, heal-only-on-breakage). The
 remaining seams:
 
-- **Wire auth into the watchdog** — `authenticate()` works today; the loop should hold the
-  authenticated context across cycles so logins are scraped like any other page.
 - **Hook extractor/healer plugins into the loop** — transforms run already; extractors and
   healers should be tried before the built-ins.
 - **Auto-detect pagination** — `detectPagination()` exists; a `--pagination auto` mode would

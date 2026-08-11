@@ -49,6 +49,9 @@ export {
   classifyValue, kindsCompatible, profileField, verifyValueTypes, describeKind,
 } from './valuetypes.js';
 
+export type { SelfHealingOptions, SelfHealingResult } from './adapters.js';
+export { scrapeWithSelfHealing, withSelfHealing, repairSelectors } from './adapters.js';
+
 export type { AlertChannel, AlertMessage } from './alert.js';
 export { sendAlert } from './alert.js';
 

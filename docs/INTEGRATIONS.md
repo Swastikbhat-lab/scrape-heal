@@ -147,6 +147,114 @@ coming back empty or misshapen, the loop notices — and if it can, heals.
 
 ---
 
+## Recipe 4 — drop-in adapters (Scrapy, Crawlee, plain Playwright)
+
+Don't want a watchdog at all? Call the loop from inside your existing crawler.
+Three tested drop-ins live in `integrations/`, and the Node helpers are also
+package-root exports from npm (`import { scrapeWithSelfHealing } from
+'scrape-heal'`). The pattern is the same everywhere: validate your rows against
+the last good run; when they stop matching, heal in a real browser and prove
+it before returning anything.
+
+### Plain Playwright — `integrations/playwright.mjs`
+
+```js
+import { chromium } from 'playwright';
+import { scrapeWithSelfHealing } from './integrations/playwright.mjs';
+
+const browser = await chromium.launch();
+const page = await browser.newPage();
+
+const { rows, config: fixed, repaired } = await scrapeWithSelfHealing({
+  browser,
+  config: {
+    url: 'https://example.com/products',
+    items: '.product-card',
+    fields: [{ name: 'name', selector: '.name' }, { name: 'price', selector: '.price' }],
+    identityField: 'name',
+    minItems: 4,
+  },
+  extractRows: async () => {
+    await page.goto('https://example.com/products');
+    return page.locator('.product-card').allTextContents(); // whatever you do
+  },
+  lastGoodRows: rowsFromLastRun,   // your DB; [] on first run
+  onRepair: (cfg) => saveConfig(cfg),
+});
+
+await push(rows);
+```
+
+### Crawlee — `integrations/crawlee.mjs`
+
+```js
+import { PlaywrightCrawler } from 'crawlee';
+import { withSelfHealing } from './integrations/crawlee.mjs';
+
+const guard = withSelfHealing({
+  config,
+  lastGoodRows,
+  getBrowser: async () => browser,
+  llm: { apiKey: process.env.OPENAI_API_KEY },  // optional: data changed too
+  onRepair: (cfg) => saveConfig(cfg),
+});
+
+const crawler = new PlaywrightCrawler({
+  async requestHandler({ page, pushData }) {
+    const rows = extractFromDom(page);
+    const { rows: good, repaired } = await guard(rows);
+    await pushData(good);
+    if (!repaired) alertOn(rows);   // still broken — your call
+  },
+});
+```
+
+### Scrapy — `integrations/scrapy_middleware.py`
+
+Scrapy runs in Python; the loop lives in Node, so the middleware is the seam:
+it keeps your spider's last good rows in `.scrape-heal/last-good.jsonl`, and
+the moment an item is missing a required field it runs the one-shot repair CLI
+(which needs `scrape-heal` on PATH) and rewrites `scraper.config.json`. Your
+spider reads that file each parse — the selectors are fixed by the next
+request:
+
+```python
+# settings.py
+SPIDER_MIDDLEWARES = { "scrape_middleware.ScrapeHealMiddleware": 950 }
+```
+
+```bash
+# inside the spider — read selectors from the config, not from constants
+import json
+with open("scraper.config.json") as f:
+    sel = json.load(f)
+for card in response.css(sel["items"]):
+    yield {
+        "name": card.css(sel["fields"]["name"] + "::text").get(),
+        "price": card.css(sel["fields"]["price"] + "::text").get(),
+    }
+```
+
+### The one-shot seam: `scrape-heal repair`
+
+Any of these can fall back to "fix it now" without a watcher:
+
+```bash
+scrape-heal repair --config scraper.config.json --rows last-good.json
+scrape-heal repair --config scraper.config.json --rows-from "python my_spider.py --json"
+```
+
+It re-measures the live page in a browser, heals, rewrites only the selectors
+(keeping every other config key), and exits 0 on a verified repair / 1 with
+nothing modified when no repair can be verified. Great from cron too:
+
+```bash
+# nightly: if today's run broke, heal it before anyone notices
+scrape-heal repair --config scraper.config.json --rows data/last-good.json || echo "still broken — page the human"
+```
+
+---
+
 ## The ground rules (same for every recipe)
 
 - **`url` is only needed for self-healing.** The browser has to re-measure the

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,9 @@ import {
   type WatchFileConfig,
 } from './config.js';
 import type { AuthConfig } from './auth.js';
+import { authenticate } from './auth.js';
+import { heal } from './heal.js';
+import type { ExtractedItem } from './scraper.js';
 
 /**
  * Watchdog mode: run the detect → heal → verify loop on a cadence.
@@ -109,6 +112,83 @@ if (args.has('memory')) {
   }
   console.log(formatMemory(memory, site));
   process.exit(0);
+}
+
+// ---- --repair: one-shot heal for an external scraper, write back, exit ----
+// The drop-in seam for crawlers that can't host Node (Scrapy's middleware
+// shells out to this) and for anyone who wants "fix it now" without a
+// watchdog: give the loop the config and the last good rows, it re-measures
+// the live page in a browser, heals, rewrites the config in place, and exits
+// 0 on a verified repair / 1 when nothing could be shipped.
+if (args.has('repair')) {
+  if (!filePath) {
+    console.error('repair needs a config: --config <scraper.config.json>');
+    process.exit(2);
+  }
+  const spec = watchFrom(args, fileCfg, { armed: false }, 'repair');
+  if (!spec.config.url) {
+    console.error('repair needs a url — set it in the config file (or --url)');
+    process.exit(2);
+  }
+  const baselineFile = args.get('rows') ?? args.get('rows-file') ?? fileCfg.rowsFile;
+  const baselineCmd = args.get('rows-from') ?? fileCfg.rowsFrom;
+  let baseline: ExtractedItem[] = [];
+  if (baselineFile) baseline = (await fileRows(baselineFile)()).items ?? [];
+  else if (baselineCmd) baseline = (await commandRows(baselineCmd)()).items ?? [];
+  if (!baseline.length) {
+    console.error(
+      'repair needs the last good rows — --rows <file> (JSON/JSONL/CSV) or --rows-from "<cmd>" ' +
+      'must produce parseable rows',
+    );
+    process.exit(2);
+  }
+  console.log(`  repairing ${spec.config.url} against ${baseline.length} baseline row(s)…`);
+  const browser = await chromium.launch();
+  let authHandle: Awaited<ReturnType<typeof authenticate>> | null = null;
+  try {
+    if (spec.auth) {
+      authHandle = await authenticate(browser, spec.auth, (l) => console.log(`  ${l}`));
+    }
+    const result = await heal(browser, spec.config, baseline, {
+      llm: spec.llm,
+      validator: spec.validator,
+      verifyTypes: spec.verifyValueTypes,
+      context: authHandle?.context ?? undefined,
+    });
+    if (result.repaired && result.verified) {
+      const out = args.get('write-config') ?? filePath;
+      writeRepairedConfig(out, fileCfg, result.config);
+      console.log(`  repaired — ${result.verified.length} item(s) verified on the live page`);
+      console.log(`  new selectors written → ${out}`);
+      for (const a of result.attempts) console.log(`  ${a}`);
+      process.exit(0);
+    }
+    console.error('repair failed — nothing shipped, nothing modified:');
+    for (const a of result.attempts) console.error(`  ${a}`);
+    process.exit(1);
+  } finally {
+    if (authHandle) await authHandle.close();
+    await browser.close();
+  }
+}
+
+/**
+ * Write a verified repair back into the watch config file, preserving every
+ * other key (llm, alerts, targets, …) — only the selectors change. Fields are
+ * written as the friendly object shape, so the file stays `scrape-heal`-readable.
+ */
+function writeRepairedConfig(out: string, original: WatchFileConfig, repaired: ScraperConfig): void {
+  const fields: Record<string, string> = {};
+  for (const f of repaired.fields) fields[f.name] = f.selector;
+  const merged: WatchFileConfig = {
+    ...original,
+    items: repaired.items,
+    fields,
+    identityField: repaired.identityField,
+    minItems: repaired.minItems,
+  };
+  mkdirSync(dirname(resolve(out)), { recursive: true });
+  writeFileSync(resolve(out), JSON.stringify(merged, null, 2));
 }
 
 // ---- --dashboard: the live board over the per-target state files ----------

@@ -51,7 +51,8 @@
     "init": "tsx src/cli.ts --init",
     "watch": "tsx src/cli.ts",
     "dashboard": "tsx src/cli.ts --dashboard",
-    "test": "tsx --test test/validate.test.ts test/parse.test.ts test/proposal.test.ts test/ledger.test.ts test/config.test.ts test/llm-memory.test.ts test/memory.test.ts test/alert.test.ts test/changes.test.ts test/fetch-classify.test.ts test/evidence.test.ts test/valuetypes.test.ts test/watchdog-alert.test.ts test/watchdog-change.test.ts test/watchdog-classify.test.ts test/watchdog-evidence.test.ts test/dashboard.test.ts test/heal.test.ts test/heal-valuetypes.test.ts",
+    "benchmark": "tsx benchmark/run.ts",
+    "test": "tsx --test test/validate.test.ts test/parse.test.ts test/proposal.test.ts test/ledger.test.ts test/config.test.ts test/llm-memory.test.ts test/memory.test.ts test/alert.test.ts test/changes.test.ts test/fetch-classify.test.ts test/evidence.test.ts test/valuetypes.test.ts test/watchdog-alert.test.ts test/watchdog-change.test.ts test/watchdog-classify.test.ts test/watchdog-evidence.test.ts test/watchdog-auth.test.ts test/dashboard.test.ts test/heal.test.ts test/heal-valuetypes.test.ts test/cli-repair.test.ts test/adapters.test.ts",
     "typecheck": "tsc --noEmit",
     "make:gif": "node scripts/make-demo-gif.mjs",
     "make:gifs": "node scripts/make-demo-gif.mjs && node scripts/make-watchdog-gif.mjs"
