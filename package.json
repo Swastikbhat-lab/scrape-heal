@@ -4,10 +4,46 @@
   "description": "A self-healing web scraper: detects when a site's markup breaks its selectors, then repairs them with a verify-then-ship loop.",
   "type": "module",
   "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "scrape-heal": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "fixture"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Swastikbhat-lab/scrape-heal.git"
+  },
+  "homepage": "https://github.com/Swastikbhat-lab/scrape-heal",
+  "bugs": {
+    "url": "https://github.com/Swastikbhat-lab/scrape-heal/issues"
+  },
+  "keywords": [
+    "scraper",
+    "self-healing",
+    "web-scraping",
+    "playwright",
+    "watchdog",
+    "selectors",
+    "css-selectors",
+    "repair"
+  ],
+  "author": "Swastik Bhat <s.bhat@gwu.edu>",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "demo": "tsx src/demo.ts",
     "demo:any": "tsx src/demo-any.ts",
     "demo:llm": "tsx src/cli.ts --demo --mutate-values 6 --interval 5 --cycles 8 --llm-mock @llm-proposal.json",

@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';

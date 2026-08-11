@@ -61,20 +61,25 @@ On a cadence it becomes a watchdog — cycle after cycle, a red run repairs itse
 
 ## Quickstart
 
+Install from npm — no clone needed (Node ≥ 20):
+
 ```bash
-npm install
-npx playwright install chromium
-npm run demo        # watch the full break-and-recover cycle
-npm test            # the suite: validate, parse, proposals, ledger, heal end-to-end
+npm install -g scrape-heal
+npx playwright install chromium          # once — the loop drives a real browser
+scrape-heal --demo --mutate 6 --interval 5 --cycles 8   # watch it break and heal itself
 ```
 
 Then point it at something real:
 
 ```bash
-npm run init        # writes scraper.config.json — every option, commented
+scrape-heal --init        # writes scraper.config.json — every option, commented
 # ... edit url, items, fields ...
-npm run watch       # reads scraper.config.json automatically, zero flags
+scrape-heal               # reads scraper.config.json automatically, zero flags
 ```
+
+Running from a clone instead? `npm install`, `npx playwright install chromium`,
+`npm run demo`, `npm test` — every `npm run *` script maps 1:1 to a `scrape-heal`
+command.
 
 ## Plug and play
 
