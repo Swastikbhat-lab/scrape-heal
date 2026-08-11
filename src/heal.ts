@@ -5,6 +5,7 @@ import {
   describeStructure, proposeWithLLM, rememberLLM,
   type HealProposal, type LLMOptions, type SiteLLMMemory,
 } from './llm.js';
+import { verifyValueTypes } from './valuetypes.js';
 
 export interface HealResult {
   repaired: boolean;
@@ -30,6 +31,14 @@ export interface HealOptions {
   validator?: Validator;
   /** Per-site LLM memory from previous heal sessions (successes + misses). */
   memory?: SiteLLMMemory;
+  /**
+   * Value-type verification: refuse a repair whose field values no longer
+   * look like the kind of data the last good run produced (a `price` field
+   * that suddenly yields prose is a wrong binding, not a repair). On by
+   * default; set false to disable. Skipped entirely when a pluggable
+   * `validator` is given — your schema decides.
+   */
+  verifyTypes?: boolean;
 }
 
 /** The per-site key for LLM memory: the origin (scheme + host). */
@@ -119,7 +128,10 @@ export async function heal(
   baseline: ExtractedItem[],
   opts: HealOptions = {},
 ): Promise<HealResult> {
-  const textResult = await healByText(browser, config, baseline, opts.validator);
+  const textResult = await healByText(browser, config, baseline, {
+    validator: opts.validator,
+    verifyTypes: opts.verifyTypes !== false,
+  });
   if (textResult.repaired) return textResult;
 
   // LLM pass only when there is somewhere to send the request — a key, or a
@@ -138,8 +150,9 @@ async function healByText(
   browser: Browser,
   config: ScraperConfig,
   baseline: ExtractedItem[],
-  validator?: Validator,
+  opts: { validator?: Validator; verifyTypes: boolean },
 ): Promise<HealResult> {
+  const { validator } = opts;
   const attempts: string[] = [];
   const id = config.identityField;
   const known = [...new Set(baseline.map((b) => (b[id] ?? '').trim()).filter(Boolean))];
@@ -206,7 +219,7 @@ async function healByText(
           chosen = cand;
         }
       }
-      fields.push({ name: f.name, selector: chosen });
+      fields.push({ name: f.name, selector: chosen, type: f.type });
     }
 
     const candidate: ScraperConfig = { ...config, items, fields };
@@ -218,14 +231,22 @@ async function healByText(
     const check: Page = await browser.newPage();
     try {
       const extracted = await extract(candidate, check);
-      const v = validate(candidate, extracted, baseline, validator);
-      if (v.ok) {
-        attempts.push(
-          `heal: PASS — ${extracted.length} item(s), every known "${id}" present. Shipping the repair.`,
-        );
-        return { repaired: true, attempts, config: candidate, verified: extracted };
+      if (extracted.failed) {
+        attempts.push(`heal: FAIL — could not re-extract the live page (${extracted.failed.message}); nothing shipped.`);
+        return { repaired: false, attempts, config, verified: null };
       }
-      attempts.push(`heal: FAIL — ${v.issues.join('; ')}. Nothing shipped.`);
+      const v = validate(candidate, extracted.items, baseline, validator);
+      const typeIssues = opts.verifyTypes
+        ? verifyValueTypes(candidate.fields, extracted.items, baseline)
+        : [];
+      const failReasons = [...(v.ok ? [] : v.issues), ...typeIssues];
+      if (failReasons.length === 0) {
+        attempts.push(
+          `heal: PASS — ${extracted.items.length} item(s), every known "${id}" present, values still look right. Shipping the repair.`,
+        );
+        return { repaired: true, attempts, config: candidate, verified: extracted.items };
+      }
+      attempts.push(`heal: FAIL — ${failReasons.join('; ')}. Nothing shipped.`);
       return { repaired: false, attempts, config, verified: null };
     } finally {
       await check.close();
@@ -287,6 +308,7 @@ async function healByLLM(
       const fields: FieldConfig[] = config.fields.map((f) => ({
         name: f.name,
         selector: proposal.fields[f.name] ?? f.selector,
+        type: f.type,
       }));
       const candidate: ScraperConfig = { ...config, items: proposal.items, fields };
       attempts.push(
@@ -298,25 +320,43 @@ async function healByLLM(
       const check: Page = await browser.newPage();
       try {
         const extracted = await extract(candidate, check);
+        if (extracted.failed) {
+          // The verification navigation hit a block or a dead page — that is
+          // not a failed repair, it is no evidence at all. Nothing ships.
+          const failure = `verification could not load the page (${extracted.failed.message})`;
+          attempts.push(`heal-llm: attempt ${attempt} FAILED — ${failure}`);
+          history.push({ proposal, failure });
+          memory = rememberLLM(memory, { at: new Date().toISOString(), oldSig, ok: false, proposal, failure });
+          continue;
+        }
+        const rows = extracted.items;
 
         // Did the *values* really change, or did the model just find a better
         // path to the same data? If the known identities survive, demand them.
         const want = new Set(baseline.map((b) => (b[id] ?? '').trim()).filter(Boolean));
-        const have = new Set(extracted.map((it) => (it[id] ?? '').trim()));
+        const have = new Set(rows.map((it) => (it[id] ?? '').trim()));
         const missing = [...want].filter((w) => !have.has(w));
 
         const gate = opts.validator
-          ? opts.validator(extracted, { config: candidate, baseline })
-          : validateShape(candidate, extracted);
-        if (gate.ok) {
+          ? opts.validator(rows, { config: candidate, baseline })
+          : validateShape(candidate, rows);
+        const typeIssues =
+          opts.verifyTypes !== false && !opts.validator
+            ? verifyValueTypes(candidate.fields, rows, baseline)
+            : [];
+        // Shape issues + identity issues + value-type issues. The type gate is
+        // the one that refuses a *wrong binding*: shape passes, identities
+        // check out, but the values no longer look like themselves.
+        const allIssues = [...(gate.ok ? [] : gate.issues), ...typeIssues];
+        if (allIssues.length === 0) {
           const detail = missing.length === 0
-            ? `${extracted.length} item(s), every known "${id}" still present`
-            : `${extracted.length} item(s); the old "${id}" values are gone (the data changed), ` +
-              'verification is shape-only: correct count, no empty fields';
+            ? `${rows.length} item(s), every known "${id}" still present, values still look right`
+            : `${rows.length} item(s); the old "${id}" values are gone (the data changed), ` +
+              'verification is shape-plus-type: correct count, no empty fields, values still look right';
           attempts.push(`heal-llm: attempt ${attempt} PASS — ${detail}. Shipping the repair.`);
           memory = rememberLLM(memory, { at: new Date().toISOString(), oldSig, ok: true, proposal });
           memory.site = site;
-          return { repaired: true, attempts, config: candidate, verified: extracted, memory };
+          return { repaired: true, attempts, config: candidate, verified: rows, memory };
         }
 
         // Failure feedback: the verification issues plus real selector-hit
@@ -331,7 +371,7 @@ async function healByLLM(
             : 0;
           fieldHits.push(`"${f.selector}" → ${globalN} on page${itemsCount > 0 ? `, ${innerN} inside first item` : ''}`);
         }
-        const failure = `${gate.issues.join('; ')}. Selector hits: items "${candidate.items}" → ${itemsCount}; ${fieldHits.join('; ')}`;
+        const failure = `${allIssues.join('; ')}. Selector hits: items "${candidate.items}" → ${itemsCount}; ${fieldHits.join('; ')}`;
         attempts.push(`heal-llm: attempt ${attempt} FAILED — ${failure}`);
         history.push({ proposal, failure });
         memory = rememberLLM(memory, { at: new Date().toISOString(), oldSig, ok: false, proposal, failure });

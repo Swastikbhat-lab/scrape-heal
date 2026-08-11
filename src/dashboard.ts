@@ -12,9 +12,10 @@
  * per-site LLM memory (learned rules) — everything the loop knows, at a glance.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
-import { join, basename } from 'node:path';
+import { join, basename, resolve, sep, extname } from 'node:path';
+import type { CycleEvidence } from './evidence.js';
 import type { WatchState } from './watchdog.js';
 
 /** One target's dashboard view, derived from its state file. */
@@ -35,6 +36,10 @@ export interface TargetSnapshot {
   ledger: { items: string; verifiedAt: string; hits: number }[];
   /** Per-site LLM repair memory — what the loop has learned, at a glance. */
   learned: { site: string; successes: number; misses: number }[];
+  /** v3: last change-watching report — what the data did since the run before. */
+  lastChanges?: { at: string; added: number; removed: number; changed: number; lines: string[] };
+  /** v3: evidence captured on the last red cycle — screenshot + DOM + status. */
+  lastEvidence?: CycleEvidence;
 }
 
 function hostOf(url: string): string {
@@ -89,6 +94,8 @@ export function snapshotDir(stateDir: string): TargetSnapshot[] {
         successes: m.successes?.length ?? 0,
         misses: m.misses?.length ?? 0,
       })),
+      lastChanges: state.lastChanges,
+      lastEvidence: state.lastEvidence,
     });
   }
   return out;
@@ -157,6 +164,33 @@ export async function startDashboard(opts: DashboardOptions): Promise<RunningDas
     if (path === '/state') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(snapshotDir(stateDir), null, 2));
+      return;
+    }
+
+    // Serve captured evidence — screenshots and DOM snapshots referenced by
+    // the cards. Resolved against the evidence root with a prefix check, so
+    // a crafted path cannot escape the state directory.
+    if (path.startsWith('/evidence/')) {
+      const relPath = path.slice('/evidence/'.length);
+      const root = resolve(stateDir, 'evidence');
+      const file = resolve(root, relPath);
+      if (!file.startsWith(root + sep)) {
+        res.writeHead(403);
+        res.end('forbidden');
+        return;
+      }
+      if (!existsSync(file)) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      const ext = extname(file).toLowerCase();
+      res.writeHead(200, {
+        'content-type': ext === '.png' ? 'image/png'
+          : ext === '.html' ? 'text/html; charset=utf-8'
+            : 'application/octet-stream',
+      });
+      res.end(readFileSync(file));
       return;
     }
 
@@ -284,6 +318,22 @@ const PAGE = `<!doctype html>
           ' repair' + (m.successes === 1 ? '' : 's') + '</span> · <span class="misses">' + m.misses +
           ' miss' + (m.misses === 1 ? '' : 'es') + '</span></li>').join('')}
       </ul></div>\` : ''}
+      \${t.lastChanges && t.lastChanges.lines.length ? \`
+      <div class="section"><h3>last changes (watch)</h3><ul>
+        \${t.lastChanges.lines.map((l) => '<li>' + esc(l.trim()) + '</li>').join('')}
+      </ul></div>\` : ''}
+      \${t.lastEvidence ? \`
+      <div class="section"><h3>evidence (red)</h3>
+        \${t.lastEvidence.screenshot
+          ? '<img src="/evidence/' + esc(t.lastEvidence.screenshot.slice('evidence/'.length)) + '" alt="screenshot" style="max-width:100%;border-radius:6px;border:1px solid var(--border);margin:4px 0">'
+          : ''}
+        <ul>
+          <li>\${esc(t.lastEvidence.reason)}\${t.lastEvidence.status !== undefined ? ' — HTTP ' + esc(String(t.lastEvidence.status)) : ''}</li>
+          \${t.lastEvidence.dom
+            ? '<li><a href="/evidence/' + esc(t.lastEvidence.dom.slice('evidence/'.length)) + '" style="color:var(--green)">dom snapshot</a></li>'
+            : ''}
+        </ul>
+      </div>\` : ''}
     </div>\`;
   let targets = [];
   const render = () => {

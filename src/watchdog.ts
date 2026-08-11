@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Browser, Page } from 'playwright';
 import type { ScraperConfig, ExtractedItem, Validator } from './scraper.js';
@@ -7,14 +7,22 @@ import { extract, validate } from './scraper.js';
 import { heal, siteOrigin } from './heal.js';
 import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import { sendAlert, type AlertChannel } from './alert.js';
-import { playwrightRows, type RowFetch } from './source.js';
-import { ProxyPool, proxyLaunchOptions, type ProxyPoolOptions } from './proxy.js';
+import { captureEvidence, type CycleEvidence } from './evidence.js';
+import { playwrightRows, type RowFetch, type RowResult } from './source.js';
+import {
+  ProxyPool, proxyLaunchOptions,
+  type ProxyEntry, type ProxyPoolOptions,
+} from './proxy.js';
 import { detectGrid, extractByGrid } from './visual.js';
 import type { PaginationConfig, PagedResult } from './pagination.js';
 import { extractAllPages } from './pagination.js';
 import type { Pipeline } from './pipeline.js';
 import { runPipelines } from './pipeline.js';
 import { tryExtractors, tryHealers, applyTransforms } from './plugins.js';
+import {
+  diffChanges, formatChanges, matchesThresholds, reportHasChanges,
+  type ChangeReport, type ChangeThreshold,
+} from './changes.js';
 
 export interface LedgerEntry {
   /** A selector config proven against this target before. */
@@ -42,6 +50,14 @@ export interface WatchState {
   /** When the last alert was actually sent for this target — the throttle
    *  that stops a long-broken target from pinging the channel every cycle. */
   lastAlertAt?: string;
+  /** v3: the last change-watching report, for the dashboard. */
+  lastChanges?: { at: string; added: number; removed: number; changed: number; lines: string[] };
+  /** v3: when the last change alert was sent — its own cooldown, so a
+   *  price-drop ping never suppresses a red-cycle alert or vice versa. */
+  lastChangeAlertAt?: string;
+  /** v3: evidence captured on the last red cycle — screenshot + DOM + status,
+   *  for the dashboard and the next alert. */
+  lastEvidence?: CycleEvidence;
 }
 
 export interface WatchOptions {
@@ -74,6 +90,18 @@ export interface WatchOptions {
   pagination?: PaginationConfig;
   /** v2: Data output pipelines (webhook, file, DB). */
   pipelines?: Pipeline[];
+  /** v3: Change watching — diff every healthy cycle against the previous
+   *  run. Enabled by default (changes are logged); `thresholds` decides
+   *  which changes are worth an alert when `alerts.onChange` is set. */
+  watch?: { enabled?: boolean; thresholds?: ChangeThreshold[] };
+  /** v3: How many times a transient failure or block is retried within one
+   *  cycle before the cycle is declared red. Default 3. */
+  maxFetchAttempts?: number;
+  /** v3: Refuse repairs whose field values no longer look like the kind of
+   *  data the last good run produced (a `price` field yielding prose is a
+   *  wrong binding, not a repair). On by default; skipped when a pluggable
+   *  validator is set. */
+  verifyTypes?: boolean;
   log: (line: string) => void;
 }
 
@@ -111,13 +139,21 @@ function saveState(statePath: string, state: WatchState): void {
   writeFileSync(statePath, JSON.stringify(state, null, 2));
 }
 
-function runAlertHook(command: string | undefined, summary: string): void {
+function runAlertHook(command: string | undefined, summary: string, evidence?: CycleEvidence): void {
   if (!command) return;
-  const child = spawn(command, { shell: true, env: { ...process.env, SCRAPE_HEAL_ALERT: summary } });
+  const child = spawn(command, {
+    shell: true,
+    env: {
+      ...process.env,
+      SCRAPE_HEAL_ALERT: summary,
+      SCRAPE_HEAL_EVIDENCE: evidence ? JSON.stringify(evidence) : '',
+    },
+  });
   child.on('error', (err) => console.error(`  alert hook failed: ${err.message}`));
 }
 
 const DEFAULT_ALERT_COOLDOWN_MINUTES = 60;
+const DEFAULT_CHANGE_ALERT_COOLDOWN_MINUTES = 60;
 
 /**
  * True when a target's last alert is inside its cooldown window — the
@@ -139,12 +175,41 @@ export function alertThrottled(
  *  throttled per target: the gate is passed at most once per cooldown, and
  *  the last-sent timestamp is persisted in state so the cooldown survives
  *  restarts (callers save state right after). */
+//
+// v3: change alerts — the same channels, a separate cooldown, and no shell
+// hook (the `onAlert` command is for red cycles; a price drop is data news,
+// not a breakage alarm).
+async function runChangeAlerts(
+  opts: { alerts?: AlertChannel; log: (line: string) => void },
+  state: WatchState,
+  summary: string,
+  cycle: number,
+  target: string,
+): Promise<void> {
+  const channels = opts.alerts;
+  if (!channels || (!channels.slack && !channels.discord && !channels.webhook)) return;
+
+  const cooldown = channels.changeCooldownMinutes ?? DEFAULT_CHANGE_ALERT_COOLDOWN_MINUTES;
+  const now = new Date().toISOString();
+  if (alertThrottled(state.lastChangeAlertAt, cooldown, now)) {
+    opts.log(`  change alert throttled — already alerted within the last ${cooldown} min`);
+    return;
+  }
+  state.lastChangeAlertAt = now;
+  try {
+    await sendAlert(channels, { target, cycle, summary, at: now });
+    opts.log(`  change alert sent → ${Object.keys(channels).join(', ')}`);
+  } catch (err) {
+    opts.log(`  change alert delivery failed — ${(err as Error).message}`);
+  }
+}
 async function runAlerts(
   opts: { onAlert?: string; alerts?: AlertChannel; log: (line: string) => void },
   state: WatchState,
   summary: string,
   cycle: number,
   target: string,
+  evidence?: CycleEvidence,
 ): Promise<void> {
   const cooldown = opts.alerts?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
   const now = new Date().toISOString();
@@ -153,10 +218,13 @@ async function runAlerts(
     return;
   }
   state.lastAlertAt = now;
-  runAlertHook(opts.onAlert, summary);
+  runAlertHook(opts.onAlert, summary, evidence);
   if (!opts.alerts) return;
   try {
-    await sendAlert(opts.alerts, { target, cycle, summary, at: now });
+    await sendAlert(opts.alerts, {
+      target, cycle, summary, at: now,
+      ...(evidence ? { evidence } : {}),
+    });
     opts.log(`  alert sent → ${Object.keys(opts.alerts).join(', ')}`);
   } catch (err) {
     opts.log(`  alert delivery failed — ${(err as Error).message}`);
@@ -195,11 +263,14 @@ async function tryLedger(
     if (configSignature(entry.config) === currentSig) continue; // this one just failed
     const page = await browser.newPage();
     try {
-      const items = await extract(entry.config, page);
-      const v = validate(entry.config, items, state.baseline, validator);
+      const extracted = await extract(entry.config, page);
+      // A remembered config that now hits a block or a dead page is not a
+      // flip-flop — skip it, don't ship it.
+      if (extracted.failed) continue;
+      const v = validate(entry.config, extracted.items, state.baseline, validator);
       if (v.ok) {
         entry.hits += 1;
-        return { config: entry.config, data: items };
+        return { config: entry.config, data: extracted.items };
       }
     } catch {
       // page failed to load — try the next remembered config
@@ -211,6 +282,103 @@ async function tryLedger(
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Screenshot + DOM-dump the page that just failed, and record why.
+ *
+ * Uses the passed-in page when it is already on the target (the non-proxy
+ * fetch navigated it); otherwise opens a fresh page and re-navigates, so a
+ * proxy-path failure still leaves a receipt. Strictly best-effort — a
+ * capture that fails returns a reason-only record, never an error.
+ */
+async function captureFailureEvidence(
+  browser: Browser,
+  page: Page,
+  url: string,
+  stateDir: string,
+  targetKey: string,
+  reason: string,
+  status?: number,
+): Promise<CycleEvidence> {
+  try {
+    if (page.url() === 'about:blank' && url) {
+      const fresh = await browser.newPage();
+      try {
+        await fresh.goto(url, { waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => {});
+        return await captureEvidence(fresh, stateDir, targetKey, reason, status);
+      } finally {
+        await fresh.close();
+      }
+    }
+    return await captureEvidence(page, stateDir, targetKey, reason, status);
+  } catch {
+    return { at: new Date().toISOString(), reason, status };
+  }
+}
+
+/** A reason-only evidence record (no page to look at — a crashed source). */
+function reasonOnlyEvidence(reason: string, status?: number): CycleEvidence {
+  return { at: new Date().toISOString(), reason, status };
+}
+
+// ---------------------------------------------------------- failure classes ---
+//
+// The loop never heals a page that failed to respond. Three outcomes are
+// classified at fetch time (see scraper.ts): transient (5xx/timeout/network),
+// block (403/429/captcha), or loaded. Transients are retried with backoff;
+// blocks rotate proxies when a pool is configured, then retry. Only a page
+// that actually loaded and returned wrong-shaped data is breakage — healable.
+
+const MAX_FETCH_ATTEMPTS = 3;
+
+const backoffMs = (attempt: number) =>
+  Math.min(500 * 2 ** (attempt - 1), 4_000) + Math.random() * 200;
+
+/**
+ * The default browser fetch, routed through the proxy pool. Each fetch runs
+ * in a fresh context with the current proxy (Playwright proxies are
+ * per-context), so a block can rotate to the next healthy proxy without
+ * relaunching anything. A blocked or dead proxy is cooled down by the pool
+ * and the next fetch picks another one.
+ */
+function proxyAwareFetch(
+  browser: Browser,
+  getConfig: () => ScraperConfig,
+  pool: ProxyPool,
+  log: (line: string) => void,
+): RowFetch {
+  let entry: ProxyEntry | null = null;
+  return async () => {
+    if (!entry) entry = pool.next();
+    const ctx = entry
+      ? await browser.newContext({ proxy: proxyLaunchOptions(entry.url) })
+      : await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      const result = await extract(getConfig(), page);
+      if (!entry) return result;
+      if (result.failed?.kind === 'block') {
+        // The site refused us — this proxy is the problem (or at least not
+        // helping). Cool it down and rotate on the next attempt.
+        pool.record(entry, {
+          ok: false, ms: 0, status: result.status, bodySample: result.failed.message,
+        });
+        log(`  proxy ${entry.url} blocked — cooling it down and rotating`);
+        entry = null;
+      } else if (result.failed?.kind === 'transient' && !result.status) {
+        // The navigation itself threw (no status) — likely a dead proxy.
+        // A 5xx from the site is the site's fault; the proxy stays healthy.
+        pool.record(entry, { ok: false, ms: 0 });
+        entry = null;
+      } else {
+        pool.record(entry, { ok: true, ms: 0 });
+      }
+      return result;
+    } finally {
+      await ctx.close();
+    }
+  };
+}
 
 /**
  * Watch one target on a cadence.
@@ -258,10 +426,22 @@ export async function runWatchdog(
   }
 
   let config = state.config;
-  const fetchRows = opts.fetchRows ?? playwrightRows(page, () => config);
 
   // Initialize proxy pool for anti-bot rotation.
   const proxyPool = opts.proxy ? new ProxyPool(opts.proxy) : null;
+
+  // The default fetch is the browser. With a proxy pool configured, each
+  // fetch runs through the current proxy so a block rotates to the next one.
+  const fetchRows = opts.fetchRows ?? (proxyPool
+    ? proxyAwareFetch(browser, () => config, proxyPool, opts.log)
+    : playwrightRows(page, () => config));
+
+  const maxFetchAttempts = opts.maxFetchAttempts ?? MAX_FETCH_ATTEMPTS;
+
+  // Evidence lands in <stateDir>/evidence/<target>/… — the dashboard serves
+  // it from the same directory, and alerts reference it by relative path.
+  const stateDir = dirname(opts.statePath);
+  const targetKey = basename(opts.statePath).replace(/\.json$/, '') || 'target';
 
   let exitCode = 0;
   let cycle = 0;
@@ -269,7 +449,78 @@ export async function runWatchdog(
     cycle++;
     const checkedAt = new Date().toISOString();
 
-    let items = await fetchRows();
+    // ---- fetch + classify -------------------------------------------------
+    // Transient failures (5xx, timeouts, network errors) are retried with
+    // exponential backoff; blocks rotate proxies (when configured) and retry.
+    // Only a page that actually loaded is passed on to validation — a page
+    // that never responded is never handed to the healer.
+    let fetchResult: RowResult = { items: null };
+    for (let attempt = 1; attempt <= maxFetchAttempts; attempt++) {
+      fetchResult = await fetchRows();
+      const kind = fetchResult.failed?.kind;
+      if (!kind) break;
+      const retriable = kind === 'transient' || (kind === 'block' && proxyPool);
+      if (!retriable || attempt === maxFetchAttempts) break;
+      const failure = fetchResult.failed;
+      opts.log(
+        `  ${kind} fetch failure (${failure!.message}) — attempt ${attempt}/${maxFetchAttempts}, retrying${proxyPool && kind === 'block' ? ' on the next proxy' : ''}…`,
+      );
+      await sleep(backoffMs(attempt));
+    }
+    let items = fetchResult.items;
+    const fetchFailed = fetchResult.failed;
+
+    // ---- the page itself never responded — red, alert, never heal --------
+    if (fetchFailed) {
+      state.lastStatus = 'red';
+      state.alertCount += 1;
+      state.lastCheckedAt = checkedAt;
+      exitCode = 1;
+      const cause = fetchFailed.kind === 'block'
+        ? (proxyPool
+            ? `blocked after ${maxFetchAttempts} attempt(s) through the proxy pool — ${fetchFailed.message}`
+            : `blocked (${fetchFailed.message}) — configure "proxy" to rotate; nothing was healed`)
+        : `site failed to respond after ${maxFetchAttempts} attempt(s) — ${fetchFailed.message}`;
+      const summary = `cycle ${cycle}: ${cause}`;
+      opts.log(`[cycle ${cycle}] RED — ${fetchFailed.kind === 'block' ? 'the site blocked us' : 'the site did not respond'}`);
+      opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      opts.log(`  ${summary}`);
+      opts.log('  This is not a site change — nothing was modified, nothing was healed.');
+      opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      opts.log('');
+      const evidence = await captureFailureEvidence(
+        browser, page, config.url, stateDir, targetKey,
+        cause, fetchResult.status,
+      );
+      state.lastEvidence = evidence;
+      if (evidence.screenshot) opts.log(`  evidence → ${evidence.screenshot}`);
+      await runAlerts(opts, state, summary, cycle, config.url || '(rows source)', evidence);
+      saveState(opts.statePath, state);
+      if (opts.cycles !== undefined && cycle >= opts.cycles) break;
+      await sleep(opts.intervalSeconds * 1000);
+      continue;
+    }
+
+    if (items === null) {
+      // The scraper itself failed — a crash is not a site change, and healing
+      // it would be guessing about which of the two is broken. Alert instead.
+      state.lastStatus = 'red';
+      state.alertCount += 1;
+      state.lastCheckedAt = checkedAt;
+      exitCode = 1;
+      opts.log(`[cycle ${cycle}] RED — the scraper source failed to produce rows`);
+      opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      opts.log(`  cycle ${cycle}: the scraper command errored or emitted no parseable output`);
+      opts.log('  This is a scraper failure, not a site change — check the scraper itself.');
+      opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      opts.log('');
+      state.lastEvidence = reasonOnlyEvidence('scraper source failed to produce rows');
+      await runAlerts(opts, state, `cycle ${cycle}: scraper source failed to produce rows`, cycle, config.url || '(rows source)', state.lastEvidence);
+      saveState(opts.statePath, state);
+      if (opts.cycles !== undefined && cycle >= opts.cycles) break;
+      await sleep(opts.intervalSeconds * 1000);
+      continue;
+    }
 
     // ---- v2: pagination — when configured, walk every page --------------
     if (items && items.length > 0 && opts.pagination && config.url) {
@@ -277,7 +528,7 @@ export async function runWatchdog(
       try {
         const paged = await extractAllPages(
           page, config.url,
-          async () => (await fetchRows()) ?? [],
+          async () => (await fetchRows()).items ?? [],
           opts.pagination,
         );
         items = paged.items;
@@ -310,29 +561,10 @@ export async function runWatchdog(
       }
     }
 
-    if (items === null) {
-      // The scraper itself failed — a crash is not a site change, and healing
-      // it would be guessing about which of the two is broken. Alert instead.
-      state.lastStatus = 'red';
-      state.alertCount += 1;
-      state.lastCheckedAt = checkedAt;
-      exitCode = 1;
-      opts.log(`[cycle ${cycle}] RED — the scraper source failed to produce rows`);
-      opts.log('━━━ ALERT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      opts.log(`  cycle ${cycle}: the scraper command errored or emitted no parseable output`);
-      opts.log('  This is a scraper failure, not a site change — check the scraper itself.');
-      opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      opts.log('');
-      await runAlerts(opts, state, `cycle ${cycle}: scraper source failed to produce rows`, cycle, config.url || '(rows source)');
-      saveState(opts.statePath, state);
-      if (opts.cycles !== undefined && cycle >= opts.cycles) break;
-      await sleep(opts.intervalSeconds * 1000);
-      continue;
-    }
-
     const v = validate(config, items, state.baseline, opts.validator);
 
     if (v.ok) {
+      const prev = state.baseline;
       state.baseline = items;
       rememberLedger(state, config, checkedAt);
       state.lastStatus = 'healthy';
@@ -342,6 +574,35 @@ export async function runWatchdog(
         `[cycle ${cycle}] OK — ${items.length} item(s), shape matches the last good run` +
         (cycle === 1 && items.length ? ' (baseline captured)' : ''),
       );
+
+      // ---- v3: change watching — diff this run against the previous one ----
+      // The first cycle only establishes the baseline; after that, every
+      // healthy run is diffed and the changes are logged (and, when
+      // configured, alerted on thresholds like price drops or restocks).
+      if (opts.watch?.enabled !== false && prev.length > 0) {
+        const report: ChangeReport = diffChanges(prev, items, config.identityField);
+        if (reportHasChanges(report)) {
+          const lines = formatChanges(report, config.identityField);
+          state.lastChanges = {
+            at: checkedAt,
+            added: report.added.length,
+            removed: report.removed.length,
+            changed: report.changed.length,
+            lines,
+          };
+          opts.log('  changes vs the last good run:');
+          for (const l of lines) opts.log(l);
+
+          const thresholds = opts.watch?.thresholds;
+          const hits = thresholds?.length ? matchesThresholds(report, thresholds) : [];
+          if (opts.alerts?.onChange === true && (hits.length || !thresholds?.length)) {
+            const summary = hits.length
+              ? `cycle ${cycle}: ${hits.map((h) => h.rule).join('; ')} — ${hits.flatMap((h) => h.detail).join('; ')}`
+              : `cycle ${cycle}: data changed — ${report.added.length} item(s) added, ${report.removed.length} removed, ${report.changed.length} field change(s)`;
+            await runChangeAlerts(opts, state, summary, cycle, config.url || '(rows source)');
+          }
+        }
+      }
 
       // ---- v2: pipelines — deliver data downstream on every healthy cycle
       if (opts.pipelines && opts.pipelines.length && items.length > 0) {
@@ -364,7 +625,8 @@ export async function runWatchdog(
         opts.log('  Add --url <target> to enable self-healing; until then, detection only.');
         opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         opts.log('');
-        await runAlerts(opts, state, `cycle ${cycle}: ${v.issues.join('; ')}`, cycle, config.url || '(rows source)');
+        state.lastEvidence = reasonOnlyEvidence(`cycle ${cycle}: ${v.issues.join('; ')}`);
+        await runAlerts(opts, state, `cycle ${cycle}: ${v.issues.join('; ')}`, cycle, config.url || '(rows source)', state.lastEvidence);
         saveState(opts.statePath, state);
         if (opts.cycles !== undefined && cycle >= opts.cycles) break;
         await sleep(opts.intervalSeconds * 1000);
@@ -399,6 +661,7 @@ export async function runWatchdog(
           llm: opts.llm,
           validator: opts.validator,
           memory: state.llmMemory[siteKey],
+          verifyTypes: opts.verifyTypes,
         });
         if (result.memory) state.llmMemory[siteKey] = result.memory;
         if (result.repaired && result.verified) {
@@ -432,7 +695,14 @@ export async function runWatchdog(
           opts.log('  Nothing was modified. The data is still broken and someone should look.');
           opts.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
           opts.log('');
-          await runAlerts(opts, state, summary, cycle, config.url);
+          // The page is right there and broken — keep receipts.
+          const evidence = await captureFailureEvidence(
+            browser, page, config.url, stateDir, targetKey,
+            `cycle ${cycle}: ${v.issues.join('; ')}`, undefined,
+          );
+          state.lastEvidence = evidence;
+          if (evidence.screenshot) opts.log(`  evidence → ${evidence.screenshot}`);
+          await runAlerts(opts, state, summary, cycle, config.url, evidence);
         }
       }
     }

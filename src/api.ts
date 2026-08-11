@@ -153,10 +153,21 @@ export async function startApi(
 
     await page.close();
 
+    // The cycle's evidence (screenshot/DOM/status, when it went red) rides
+    // along in the response — the same record the dashboard shows.
+    let evidence: unknown;
+    try {
+      const st = JSON.parse(readFileSync(statePath, 'utf8')) as { lastEvidence?: unknown };
+      evidence = st.lastEvidence;
+    } catch {
+      evidence = undefined;
+    }
+
     return {
       ok: exitCode === 0,
       status: exitCode === 0 ? 'healthy' : 'red',
       log: lines,
+      ...(evidence ? { evidence } : {}),
     };
   };
 

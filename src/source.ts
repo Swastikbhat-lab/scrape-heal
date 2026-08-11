@@ -11,11 +11,23 @@ import { extract } from './scraper.js';
  * of them is irrelevant. Playwright is one source; a command that prints JSON
  * or CSV (Scrapy, Puppeteer, plain requests+regex, a cron dump) is another.
  *
- * Returning null means the source itself failed to run (crash, timeout, bad
- * output) — that is reported as a source failure, not as a site change, and
- * the loop never tries to "heal" a scraper that merely crashed.
+ * The result distinguishes three failures, so the loop reacts correctly:
+ *   - `items: null` — the source itself failed (crash, timeout, bad output).
+ *     Reported as a source failure, never healed.
+ *   - `failed.kind: 'transient'` — the site was unreachable/overloaded.
+ *     Retried with backoff, never healed.
+ *   - `failed.kind: 'block'` — the site refused us (403/captcha). Proxies are
+ *     rotated, never healed.
  */
-export type RowFetch = () => Promise<ExtractedItem[] | null>;
+export type RowResult = {
+  items: ExtractedItem[] | null;
+  /** HTTP status of the page response, when one was received. */
+  status?: number;
+  /** Set only when the page itself failed to load/respond. Never healed. */
+  failed?: { kind: 'transient' | 'block'; message: string };
+};
+
+export type RowFetch = () => Promise<RowResult>;
 
 /** The built-in source: drive the page with Playwright and the config's selectors.
  *  Config is passed as a getter so that a repaired config takes effect on the
@@ -29,20 +41,20 @@ export const playwrightRows =
 /** Run an external scraper and read its rows from stdout (JSON array or CSV). */
 export const commandRows = (cmd: string): RowFetch => async () => {
   const out = await runCapture(cmd);
-  if (!out.ok) return null;
+  if (!out.ok) return { items: null };
   try {
-    return parseRows(out.stdout);
+    return { items: parseRows(out.stdout) };
   } catch {
-    return null;
+    return { items: null };
   }
 };
 
 /** Read rows from a JSON or CSV file. */
 export const fileRows = (path: string): RowFetch => () => {
   try {
-    return Promise.resolve(parseRows(readFileSync(path, 'utf8')));
+    return Promise.resolve({ items: parseRows(readFileSync(path, 'utf8')) });
   } catch {
-    return Promise.resolve(null);
+    return Promise.resolve({ items: null });
   }
 };
 

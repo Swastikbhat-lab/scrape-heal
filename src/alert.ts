@@ -19,6 +19,14 @@ export interface AlertChannel {
    *  target that stays broken doesn't ping the channel every cycle.
    *  Default 60; 0 disables throttling (alert every red cycle). */
   cooldownMinutes?: number;
+
+  /** Also alert on healthy cycles whose data changed (see `watch` in the
+   *  config — thresholds decide which changes are worth it). Default off. */
+  onChange?: boolean;
+  /** Cooldown for change alerts, minutes. Default 60; 0 alerts every
+   *  qualifying change. Tracked separately from `cooldownMinutes`, so a
+   *  price-drop ping never suppresses a red-cycle alert or vice versa. */
+  changeCooldownMinutes?: number;
 }
 
 export interface AlertMessage {
@@ -28,12 +36,24 @@ export interface AlertMessage {
   /** The one-line summary — same text a cron scheduler would see. */
   summary: string;
   at: string;
+  /** Evidence captured on this red cycle — screenshot/DOM paths relative to
+   *  the state dir, plus the HTTP status that caused it. The generic webhook
+   *  receives the whole record; Slack/Discord get it as a text line. */
+  evidence?: import('./evidence.js').CycleEvidence;
 }
 
 const TIMEOUT_MS = 5_000;
 
 function humanText(m: AlertMessage): string {
-  return `🚨 scrape-heal — ${m.target} went red on cycle ${m.cycle}\n${m.summary}\n(${m.at})`;
+  let text = `🚨 scrape-heal — ${m.target} went red on cycle ${m.cycle}\n${m.summary}\n(${m.at})`;
+  if (m.evidence) {
+    const parts: string[] = [];
+    if (m.evidence.status !== undefined) parts.push(`HTTP ${m.evidence.status}`);
+    if (m.evidence.screenshot) parts.push(`screenshot: ${m.evidence.screenshot}`);
+    if (m.evidence.dom) parts.push(`dom: ${m.evidence.dom}`);
+    if (parts.length) text += `\nevidence → ${parts.join(' · ')}`;
+  }
+  return text;
 }
 
 async function post(url: string, payload: unknown): Promise<Response> {

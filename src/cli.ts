@@ -11,6 +11,7 @@ import { commandRows, fileRows, type RowFetch } from './source.js';
 import { loadValidator } from './validator.js';
 import type { AlertChannel } from './alert.js';
 import { formatMemory } from './memory.js';
+import type { ChangeThreshold } from './changes.js';
 import { startDashboard } from './dashboard.js';
 import type { LLMOptions, SiteLLMMemory } from './llm.js';
 import {
@@ -175,6 +176,8 @@ interface WatchSpec {
   pipelines?: Record<string, unknown>[];
   auth?: { kind: string; cdp?: string; dir?: string; loginUrl?: string; userSelector?: string; passSelector?: string; submitSelector?: string; sessionPath?: string };
   pluginsDir?: string;
+  watch?: { enabled?: boolean; thresholds?: ChangeThreshold[] };
+  verifyValueTypes?: boolean;
 }
 
 function parseFieldsFlag(s: string): { name: string; selector: string }[] {
@@ -219,7 +222,7 @@ function watchFrom(
     process.exit(2);
   }
 
-  const fields = fieldsFrom(cfg.fields, undefined)
+  const fields = fieldsFrom(cfg.fields, undefined, cfg.fieldTypes)
     ?? parseFieldsFlag(args.get('fields') ?? 'name=.name,price=.price');
   const config: ScraperConfig = {
     url: args.get('url') ?? cfg.url ?? '',
@@ -285,10 +288,18 @@ function watchFrom(
 
   const pluginsDir = args.get('plugins-dir') ?? cfg.pluginsDir;
 
+  // v3: change watching — on by default; --no-watch turns it off; thresholds
+  // come from the config file (a flag per threshold would be unreadable).
+  const watch = {
+    enabled: args.has('no-watch') ? false : cfg.watch?.enabled ?? true,
+    thresholds: cfg.watch?.thresholds,
+  };
+
   return {
     label, config, intervalSeconds: interval, cycles, statePath,
     writeConfigPath, onAlert, fetchRows, llm, alerts: cfg.alerts, validatorPath,
-    proxy, pagination, pipelines, auth, pluginsDir,
+    proxy, pagination, pipelines, auth, pluginsDir, watch,
+    verifyValueTypes: cfg.verifyValueTypes,
   };
 }
 
@@ -367,7 +378,8 @@ if (targets.length > 0) {
       `${s.fetchRows ? ' (rows from an external scraper)' : ''}` +
       `${s.llm ? ` · llm repair (${s.llm.model ?? 'gpt-4o-mini'}, ${s.llm.maxAttempts ?? 3} attempt(s))` : ''}` +
       `${s.validator ? ' · custom validator' : ''}` +
-      `${s.alerts ? ` · alerts: ${Object.keys(s.alerts).join(',')}` : ''}`,
+      `${s.alerts ? ` · alerts: ${Object.keys(s.alerts).join(',')}` : ''}` +
+      `${s.watch?.enabled !== false ? ` · change watching${s.alerts?.onChange ? ' (alerts on)' : ''}` : ''}`,
     );
   }
   console.log('');
@@ -388,6 +400,8 @@ if (targets.length > 0) {
       proxy: s.proxy,
       pagination: s.pagination as any,
       pipelines: s.pipelines as any,
+      watch: s.watch,
+      verifyTypes: s.verifyValueTypes,
       log: (line) => console.log(`[${s.label}] ${line}`),
     }, s.config);
   }));
@@ -506,6 +520,11 @@ if (spec.pagination) console.log(`  pagination → ${spec.pagination.kind}${spec
 if (spec.pipelines?.length) console.log(`  pipelines → ${spec.pipelines.length} output(s)`);
 if (spec.auth && spec.auth.kind !== 'none') console.log(`  auth → ${spec.auth.kind}`);
 if (spec.pluginsDir) console.log(`  plugins → ${spec.pluginsDir}`);
+if (spec.watch?.enabled !== false) {
+  console.log(`  change watching armed${spec.watch?.thresholds?.length ? ` — ${spec.watch.thresholds.length} threshold(s)` : ''}${spec.alerts?.onChange ? ' · alerts on change' : ''}`);
+} else {
+  console.log('  change watching disabled (--no-watch)');
+}
 console.log('');
 
 const browser = await chromium.launch();
@@ -524,6 +543,8 @@ const exitCode = await runWatchdog(browser, page, {
   proxy: spec.proxy,
   pagination: spec.pagination as any,
   pipelines: spec.pipelines as any,
+  watch: spec.watch,
+  verifyTypes: spec.verifyValueTypes,
   log: (line) => console.log(line),
 }, spec.config);
 

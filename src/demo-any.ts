@@ -74,7 +74,7 @@ copyFileSync(fixture('site-v1.html'), current);
 step('STEP 1 — a scraper that is NOT Playwright: plain fetch + regex');
 line('  (it reads its selectors from a JSON config and prints rows to stdout)');
 
-const good = (await rows()) ?? [];
+const good = (await rows()).items ?? [];
 const goodCheck = validate(config, good);
 line(`  ✓ regex scraper extracted ${goodCheck.itemCount} item(s) — schema OK`);
 table(good);
@@ -83,7 +83,7 @@ const baseline = good;
 step('STEP 2 — the site redeploys. The regex scraper quietly returns nothing.');
 copyFileSync(fixture('site-v2.html'), current);
 
-const broken = (await rows()) ?? [];
+const broken = (await rows()).items ?? [];
 const brokenCheck = validate(config, broken, baseline);
 line(`  ✗ regex scraper extracted ${brokenCheck.itemCount} item(s) — BROKEN`);
 brokenCheck.issues.forEach((i) => line(`    - ${i}`));
@@ -102,7 +102,7 @@ if (result.repaired && result.verified) {
   line('');
   line('  the regex scraper reads its config on every run — no code changes:');
 
-  const healed = (await rows()) ?? [];
+  const healed = (await rows()).items ?? [];
   const healedCheck = validate(result.config, healed, baseline);
   if (healedCheck.ok) {
     line(`  ✓ regex scraper re-extracted ${healedCheck.itemCount} item(s) with the new selectors`);

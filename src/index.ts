@@ -27,8 +27,11 @@
  * verifies a repair.
  */
 
-export type { ScraperConfig, FieldConfig, ExtractedItem, Validation, Validator } from './scraper.js';
-export { extract, validate, validateShape } from './scraper.js';
+export type {
+  ScraperConfig, FieldConfig, ExtractedItem, Validation, Validator,
+  Extraction, FetchFailure, FetchFailureKind,
+} from './scraper.js';
+export { extract, validate, validateShape, classifyResponse } from './scraper.js';
 
 export type { HealResult, HealOptions } from './heal.js';
 export { heal } from './heal.js';
@@ -41,6 +44,11 @@ export { describeStructure, proposeWithLLM, parseProposal, rememberLLM } from '.
 
 export { loadValidator } from './validator.js';
 
+export type { ValueKind } from './valuetypes.js';
+export {
+  classifyValue, kindsCompatible, profileField, verifyValueTypes, describeKind,
+} from './valuetypes.js';
+
 export type { AlertChannel, AlertMessage } from './alert.js';
 export { sendAlert } from './alert.js';
 
@@ -49,7 +57,7 @@ export { formatMemory } from './memory.js';
 export type { TargetSnapshot, DashboardOptions, RunningDashboard } from './dashboard.js';
 export { snapshotDir, startDashboard } from './dashboard.js';
 
-export type { RowFetch } from './source.js';
+export type { RowFetch, RowResult } from './source.js';
 export { playwrightRows, commandRows, fileRows, parseRows } from './source.js';
 
 export type { WatchFileConfig } from './config.js';
@@ -92,3 +100,11 @@ export {
   registerPlugin, unregisterPlugin, plugins, findPlugins,
   loadPlugins, tryExtractors, tryHealers, applyTransforms,
 } from './plugins.js';
+
+// ---- v3: change watching (diffs + thresholds)
+export type { ChangeReport, FieldChange, ChangeThreshold, ThresholdHit } from './changes.js';
+export { diffChanges, formatChanges, matchesThresholds, parseNumber, reportHasChanges } from './changes.js';
+
+// ---- v3: evidence-on-red (screenshot + DOM + status per failed cycle)
+export type { CycleEvidence } from './evidence.js';
+export { captureEvidence } from './evidence.js';

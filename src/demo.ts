@@ -62,7 +62,7 @@ copyFileSync(fixture('site-v1.html'), current);
 const browser = await chromium.launch();
 const page = await browser.newPage();
 
-const good = await extract(config, page);
+const good = (await extract(config, page)).items;
 const goodCheck = validate(config, good);
 line(`  ✓ extracted ${goodCheck.itemCount} item(s) — schema OK`);
 table(good).forEach((r) => line(r));
@@ -72,7 +72,7 @@ step('STEP 2 — the site redeploys overnight. Nobody tells the scraper.');
 copyFileSync(fixture('site-v2.html'), current);
 line('  (class names renamed, markup restructured — a normal Tuesday)');
 
-const broken = await extract(config, page);
+const broken = (await extract(config, page)).items;
 const brokenCheck = validate(config, broken, baseline);
 line(`  ✗ extracted ${brokenCheck.itemCount} item(s) — BROKEN`);
 brokenCheck.issues.forEach((i) => line(`    - ${i}`));

@@ -101,11 +101,11 @@ after(async () => {
 
 test('heal: repairs a redesign by text and only ships a verified config', async () => {
   site.serve('site-v1.html');
-  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+  const baseline = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
 
   // The site redeploys with renamed classes but the same data.
   site.serve('site-v2.html');
-  const broken = await extract({ ...config, url: site.url }, await browser.newPage());
+  const broken = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
   assert.equal(broken.length, 0); // .product-card no longer exists
 
   const result = await heal(browser, { ...config, url: site.url }, baseline);
@@ -115,14 +115,14 @@ test('heal: repairs a redesign by text and only ships a verified config', async 
 
   // The shipped config re-extracts the page AND passes the full gate,
   // including the baseline identity check.
-  const check = await extract(result.config, await browser.newPage());
+  const check = (await extract(result.config, await browser.newPage())).items;
   const v = validate(result.config, check, baseline);
   assert.equal(v.ok, true);
 });
 
 test('heal: LLM path repairs when the data itself changed (no text anchor)', async () => {
   site.serve('site-v1.html');
-  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+  const baseline = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
 
   // v3 renames the classes AND changes every value — nothing to match by text.
   site.serve('site-v3.html');
@@ -148,7 +148,7 @@ test('heal: LLM path repairs when the data itself changed (no text anchor)', asy
 
 test('heal: LLM path refuses a proposal that does not extract the right shape', async () => {
   site.serve('site-v1.html');
-  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+  const baseline = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
 
   site.serve('site-v3.html');
   const mock = await startMockLLM(
@@ -172,7 +172,7 @@ test('heal: LLM path refuses a proposal that does not extract the right shape', 
 
 test('heal: LLM repair learns from a failed proposal and succeeds on retry', async () => {
   site.serve('site-v1.html');
-  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+  const baseline = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
 
   site.serve('site-v3.html');
   const mock = await startMockLLMSequence([
@@ -202,7 +202,7 @@ test('heal: LLM repair learns from a failed proposal and succeeds on retry', asy
 
 test('heal: LLM repair gives up after the repair budget and records every miss', async () => {
   site.serve('site-v1.html');
-  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+  const baseline = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
 
   site.serve('site-v3.html');
   const mock = await startMockLLMSequence([
@@ -227,7 +227,7 @@ test('heal: LLM repair gives up after the repair budget and records every miss',
 
 test('heal: per-site memory from a previous session primes the next prompt', async () => {
   site.serve('site-v1.html');
-  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+  const baseline = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
 
   site.serve('site-v3.html');
   const bodies: string[] = [];
@@ -263,7 +263,7 @@ test('heal: per-site memory from a previous session primes the next prompt', asy
 
 test('heal: with no LLM configured, a values-change redesign refuses loudly', async () => {
   site.serve('site-v1.html');
-  const baseline = await extract({ ...config, url: site.url }, await browser.newPage());
+  const baseline = (await extract({ ...config, url: site.url }, await browser.newPage())).items;
 
   site.serve('site-v3.html');
   const result = await heal(browser, { ...config, url: site.url }, baseline);

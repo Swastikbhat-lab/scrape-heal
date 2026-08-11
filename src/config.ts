@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { FieldConfig, ScraperConfig } from './scraper.js';
 import type { AlertChannel } from './alert.js';
+import type { ValueKind } from './valuetypes.js';
 
 /**
  * The on-disk watch config. Friendlier than the internal shape: fields is an
@@ -27,6 +28,15 @@ export interface WatchFileConfig {
   rowsFile?: string;
   /** Where verified repairs write the new selector config. */
   writeConfig?: string;
+  /** v3: Per-field value-kind override (price, percent, date, url, image,
+   *  number, slug, text). The heal verify gate refuses a repair whose values
+   *  no longer look like the field's kind — set this when the baseline is
+   *  ambiguous or the site's format is changing legitimately. */
+  fieldTypes?: Record<string, ValueKind>;
+  /** v3: Value-type verification in the heal gate. On by default; set false
+   *  to allow repairs whose field values change shape. Ignored when a
+   *  pluggable validator is set. */
+  verifyValueTypes?: boolean;
   /** Shell command run when a cycle goes red and cannot be repaired. */
   onAlert?: string;
   /** Where state (config + baseline) lives between runs. */
@@ -53,6 +63,24 @@ export interface WatchFileConfig {
   auth?: { kind: string; cdp?: string; dir?: string; loginUrl?: string; userSelector?: string; passSelector?: string; submitSelector?: string; rememberSelector?: string; settleMs?: number; successSelector?: string; sessionPath?: string };
   /** v2: Directory of plugin files to load at startup. */
   pluginsDir?: string;
+  /** v3: Change watching — diff every healthy cycle against the previous
+   *  run and report/alert on data changes (price drops, restocks, new
+   *  items). `enabled` defaults to true (changes are logged); alerts fire
+   *  only when `alerts.onChange` is set, and only for changes that trip a
+   *  threshold when one is configured. */
+  watch?: {
+    enabled?: boolean;
+    thresholds?: {
+      field?: string;
+      dropPercent?: number;
+      risePercent?: number;
+      changedTo?: string;
+      changedFrom?: string;
+      anyChange?: boolean;
+      added?: boolean;
+      removed?: boolean;
+    }[];
+  };
   /** Multiple targets: each entry is its own watch config, merged over the
    *  top-level keys as defaults. Each target gets its own selectors, cadence,
    *  LLM config, validator, and state file — a fleet of scrapers, one config. */
@@ -77,6 +105,17 @@ export function mergeTargetConfigs(
   if (global.alerts || t.alerts) {
     merged.alerts = { ...(global.alerts ?? {}), ...(t.alerts ?? {}) };
   }
+  if (global.fieldTypes || t.fieldTypes) {
+    merged.fieldTypes = { ...(global.fieldTypes ?? {}), ...(t.fieldTypes ?? {}) };
+  }
+  if (global.watch || t.watch) {
+    // Deep-merge like llm/alerts: a target can add thresholds while keeping
+    // the global ones (or replace the whole watch config by setting its own).
+    merged.watch = {
+      enabled: t.watch?.enabled ?? global.watch?.enabled,
+      thresholds: t.watch?.thresholds ?? global.watch?.thresholds,
+    };
+  }
   return merged;
 }
 
@@ -96,8 +135,15 @@ export function readConfigFile(path: string): WatchFileConfig {
 export function fieldsFrom(
   obj: Record<string, string> | undefined,
   list: FieldConfig[] | undefined,
+  fieldTypes?: Record<string, ValueKind>,
 ): FieldConfig[] | undefined {
-  if (obj) return Object.entries(obj).map(([name, selector]) => ({ name, selector }));
+  if (obj) {
+    return Object.entries(obj).map(([name, selector]) => ({
+      name,
+      selector,
+      ...(fieldTypes?.[name] ? { type: fieldTypes[name] } : {}),
+    }));
+  }
   return list;
 }
 
@@ -124,6 +170,10 @@ export const TEMPLATE = `{
   "_repairs": "On a verified repair the new selectors are written here — point your scraper at this file.",
   "writeConfig": "scraper.config.json",
 
+  "_fieldTypes": "v3 Optional: per-field value-kind override (price, percent, date, url, image, number, slug, text). The heal verify gate refuses a repair whose values no longer look like the field's kind — set this when the baseline is ambiguous, or the site is legitimately changing the format. verifyValueTypes: false disables the check (ignored when a validator is set).",
+  "fieldTypes": { "price": "price", "stock": "text" },
+  "verifyValueTypes": true,
+
   "_alert": "Command run the moment a cycle goes red and cannot be repaired. The summary arrives in $SCRAPE_HEAL_ALERT.",
   "onAlert": null,
   "statePath": ".scrape-heal/state.json",
@@ -134,8 +184,8 @@ export const TEMPLATE = `{
   "_validator": "Optional: path to a JS file exporting a function (items, {config, baseline}) => {ok, itemCount, issues} that replaces the built-in shape checks.",
   "validator": null,
 
-  "_alerts": "Optional: notify humans the day a cycle breaks. Incoming-webhook URLs — Slack, Discord, or any generic JSON webhook. cooldownMinutes throttles to one alert per target per N minutes (default 60); 0 = alert every red cycle.",
-  "alerts": { "slack": null, "discord": null, "webhook": null, "cooldownMinutes": 60 },
+  "_alerts": "Optional: notify humans the day a cycle breaks. Incoming-webhook URLs — Slack, Discord, or any generic JSON webhook. cooldownMinutes throttles to one alert per target per N minutes (default 60); 0 = alert every red cycle. onChange: also alert on healthy cycles whose data changed (with watch.thresholds, only threshold-trips). changeCooldownMinutes throttles those separately (default 60).",
+  "alerts": { "slack": null, "discord": null, "webhook": null, "cooldownMinutes": 60, "onChange": false, "changeCooldownMinutes": 60 },
 
   "_proxy": "v2 Optional: rotate proxies to avoid anti-bot blocks. Static list or a provider URL that returns a JSON array of proxy URLs. cooldownBaseSeconds: base cooldown on block (default 30, doubles per consecutive failure, max 300).",
   "proxy": { "proxies": null, "providerUrl": null, "providerRefreshSeconds": 120, "cooldownBaseSeconds": 30, "cooldownMaxSeconds": 300 },
@@ -154,6 +204,15 @@ export const TEMPLATE = `{
 
   "_plugins": "v2 Optional: directory of plugin files (extractors, healers, transforms) loaded at startup. Each file exports a plugin object. Plugins are tried in registration order before the built-in logic.",
   "pluginsDir": "./scrape-heal-plugins",
+
+  "_watch": "v3 Optional: change watching. Every healthy cycle is diffed against the previous run — new items, gone items, field value changes — and logged. Alerts fire only with \"alerts\": {\"onChange\": true}, and only for changes that trip a threshold below. Omit \"thresholds\" to alert on any change. dropPercent/risePercent are numeric; changedTo/changedFrom are exact trimmed string matches (restock: \"stock\" changedTo \"in stock\").",
+  "watch": {
+    "enabled": true,
+    "thresholds": [
+      { "field": "price", "dropPercent": 5 },
+      { "field": "stock", "changedTo": "in stock" }
+    ]
+  },
 
   "_dashboard": "Optional: a live board of every target's last cycle, heal history, and learned rules. npm run dashboard (or scrape-heal --dashboard [port]) starts it; stateDir is where the per-target state files live.",
   "dashboard": { "port": 4321, "stateDir": ".scrape-heal" },

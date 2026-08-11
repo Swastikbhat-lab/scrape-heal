@@ -1,4 +1,6 @@
-import type { Page } from 'playwright';
+import type { Page, Response } from 'playwright';
+import { ProxyPool } from './proxy.js';
+import type { ValueKind } from './valuetypes.js';
 
 /**
  * One configurable field. Selectors are scoped *inside* each item container,
@@ -8,6 +10,14 @@ import type { Page } from 'playwright';
 export interface FieldConfig {
   name: string;
   selector: string;
+  /**
+   * Optional override of the field's value kind (price, percent, date, url,
+   * image, number, slug, text). Normally derived automatically from the last
+   * good run; set it when the baseline is ambiguous or the site's format is
+   * about to change legitimately. The heal verify gate refuses a repair whose
+   * values no longer look like this kind.
+   */
+  type?: ValueKind;
 }
 
 export interface ScraperConfig {
@@ -26,18 +36,90 @@ export interface ExtractedItem {
   [field: string]: string;
 }
 
+// ------------------------------------------------------------- failure classes
+
+/** Why a fetch produced no rows, when the page itself never really loaded.
+ *  These are the cases that must NEVER be healed — there is no broken
+ *  selector, there is a broken fetch. */
+export type FetchFailureKind = 'transient' | 'block';
+
+export interface FetchFailure {
+  /** 'transient' — the site was unreachable/overloaded (5xx, timeout, network
+   *  error). Retry with backoff; if it persists, alert, never heal.
+   *  'block' — the site refused us (403/429 or an anti-bot wall). Rotate
+   *  proxies and retry; if it persists, alert, never heal. */
+  kind: FetchFailureKind;
+  message: string;
+}
+
+/** What one fetch of the page produced. */
+export interface Extraction {
+  /** The rows. [] means the page loaded but nothing matched the items
+   *  selector — the first symptom of a redesign, and the healable case. */
+  items: ExtractedItem[];
+  /** HTTP status of the page response, when one was received. */
+  status?: number;
+  /** Set only when the page itself failed to load/respond. Never healed. */
+  failed?: FetchFailure;
+}
+
+/** Classify an HTTP response: 5xx = transient, 403/429 or a block-page
+ *  signature = blocked, anything else = fine (breakage is decided by shape,
+ *  not by the response). Pure and unit-testable. */
+export function classifyResponse(
+  status: number | undefined,
+  bodySample?: string,
+): FetchFailureKind | undefined {
+  if (status !== undefined && status >= 500) return 'transient';
+  if (status === 403 || status === 429) return 'block';
+  if (bodySample && ProxyPool.isBlocked(status ?? 200, bodySample)) return 'block';
+  return undefined;
+}
+
 /**
  * Drive a real browser to the page and pull the configured fields out of
- * every item container. Returns an empty list when the items selector itself
- * no longer matches anything — that is the first symptom of a redesign.
+ * every item container.
+ *
+ * The return value classifies the failure so the loop can react correctly:
+ * a 503 or a timeout is *transient* (retry, never heal), a 403/captcha wall
+ * is a *block* (rotate proxies, never heal), and a page that loaded fine but
+ * matched nothing is the plain empty list — that is the healable symptom.
  */
-export async function extract(config: ScraperConfig, page: Page): Promise<ExtractedItem[]> {
-  await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 });
+export async function extract(config: ScraperConfig, page: Page): Promise<Extraction> {
+  let response: Response | null = null;
+  try {
+    response = await page.goto(config.url, { waitUntil: 'networkidle', timeout: 15_000 });
+  } catch (err) {
+    // Navigation failed — DNS, connection reset, timeout. Transient by
+    // definition: retry with backoff, never heal.
+    return { items: [], failed: { kind: 'transient', message: (err as Error).message } };
+  }
+
+  const status = response?.status();
+  const kind = classifyResponse(status);
+  if (kind === 'transient' || kind === 'block') {
+    return { items: [], status, failed: { kind, message: `HTTP ${status}` } };
+  }
 
   try {
     await page.waitForSelector(config.items, { timeout: 5_000 });
   } catch {
-    return [];
+    // Nothing matched the items selector. Could be a redesign (breakage —
+    // heal) or an anti-bot wall that answers 200. Read a body sample to
+    // tell them apart before deciding.
+    let bodySample = '';
+    try {
+      bodySample = ((await response?.text()) ?? '').slice(0, 4000);
+    } catch { /* body unreadable — treat as plain breakage */ }
+    const bodyKind = classifyResponse(status ?? 200, bodySample);
+    if (bodyKind === 'block') {
+      return {
+        items: [],
+        status,
+        failed: { kind: 'block', message: 'block page detected (anti-bot challenge)' },
+      };
+    }
+    return { items: [], status };
   }
 
   const count = await page.locator(config.items).count();
@@ -51,7 +133,7 @@ export async function extract(config: ScraperConfig, page: Page): Promise<Extrac
     }
     out.push(row);
   }
-  return out;
+  return { items: out, status };
 }
 
 export interface Validation {
