@@ -30,3 +30,12 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # The repair benchmark: 15 recorded redesigns, real browser + verify
+      # gate, judged on the shipped config's actual data. The rate is the
+      # regression floor — 0.9 leaves room to add a deliberately-failing
+      # scenario (the corpus's whole point) while still catching any change
+      # that slips the loop. Runs once per push, not per matrix entry.
+      - name: Repair benchmark (rate gate)
+        if: matrix.node-version == 22
+        run: npm run benchmark -- --min-rate 0.9

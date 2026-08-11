@@ -288,7 +288,8 @@ so the loop correctly refuses rather than guess.
 
 The benchmark is a regression floor, not a claim about every site on the
 internet. The corpus lives in `benchmark/scenarios.ts` — add a scenario when
-you find a redesign that beats the loop.
+you find a redesign that beats the loop. CI runs it with `--min-rate 0.9`:
+a change that slips the rate fails the build.
 
 ## Your schema, your rules (pluggable validators)
 

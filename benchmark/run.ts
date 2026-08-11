@@ -142,8 +142,15 @@ async function judgeScenario(
 
 // ------------------------------------------------------------- report
 
+/** Read a flag's value, accepting both `--flag value` and `--flag=value`. */
+function argValue(flag: string): string | undefined {
+  const idx = process.argv.indexOf(flag);
+  if (idx !== -1) return process.argv[idx + 1];
+  return process.argv.find((a) => a.startsWith(`${flag}=`))?.slice(flag.length + 1);
+}
+
 async function main() {
-  const minRate = Number(process.argv.find((a) => a.startsWith('--min-rate='))?.split('=')[1] ?? NaN);
+  const minRate = Number(argValue('--min-rate') ?? NaN);
   const browser = await chromium.launch();
   const site = await startSite();
   const allProposals = scenarios.flatMap((s) => s.llmProposals ?? []);
